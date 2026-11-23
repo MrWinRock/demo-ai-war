@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from . import auth, db
-from .config import BAG_TAGS, CODE_ALPHABET, MATERIALS, SIZES, SLOTS, VEHICLE_COLORS
+from .config import BAG_TAGS, CODE_ALPHABET, MATERIALS, PRICE_FRAME, SIZES, SLOTS, VEHICLE_COLORS
 from .estimate import aggregate_items, estimate
 
 BKK = timezone(timedelta(hours=7))
@@ -154,7 +154,10 @@ def _companies(now: float) -> None:
 
 
 def _partners_and_prices() -> None:
-    """คู่ค้าและราคารับซื้อย้อนหลัง ราคาเดินแบบสุ่มรอบค่าตั้งต้น เป็นข้อมูลสมมติ ไม่ใช่ราคาตลาดจริง"""
+    """คู่ค้าและราคารับซื้อย้อนหลัง เป็นข้อมูลจำลอง ไม่ใช่ราคาตลาดจริง
+
+    ราคาเดินแบบสุ่มภายในกรอบของราคาอ้างอิง (PRICE_FRAME): โรงงานเริ่มใกล้ขอบบน ร้านรับซื้อเริ่มใกล้ขอบล่าง
+    """
     rnd = random.Random(23)
     today = datetime.now(BKK).date()
     days = [(today - timedelta(days=d)).isoformat() for d in range(PRICE_DAYS - 1, -1, -1)]
@@ -166,10 +169,12 @@ def _partners_and_prices() -> None:
         for key, m in MATERIALS.items():
             if m["factory"] not in accepts:
                 continue
-            price = m["price"] * (1.25 if kind == "factory" else 0.95) * rnd.uniform(0.95, 1.05)
-            drift = rnd.uniform(-0.0015, 0.0025)
+            low, high = PRICE_FRAME.get(key, (m["price"] * 0.9, m["price"] * 1.3))
+            span = max(high - low, low * 0.08)
+            price = (high - span * 0.15 if kind == "factory" else low + span * 0.2) * rnd.uniform(0.98, 1.02)
+            drift = rnd.uniform(-0.0012, 0.0018)
             for day in days:
-                price = max(0.2, price * (1 + drift + rnd.gauss(0, 0.013)))
+                price = min(high * 1.06, max(low * 0.94, price * (1 + drift + rnd.gauss(0, 0.011))))
                 db.execute("INSERT INTO prices(partner_id, material, day, price) VALUES(?,?,?,?)", (pid, key, day, round(price, 2)))
 
 

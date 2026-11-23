@@ -33,6 +33,7 @@ function renderShell() {
   $('#tabs').style.setProperty('--tab-count', tabs.length);
   $('#tabs').innerHTML = tabs.map((t) => `<button type="button" data-view="${t.id}" class="${t.id === view ? 'active' : ''}" ${t.id === view ? 'aria-current="page"' : ''}>
     <svg viewBox="0 0 24 24" aria-hidden="true">${TAB_ICON[t.id]}</svg><span>${t.label}</span></button>`).join('');
+  document.body.className = `role-${S.me.role}`;   // ธีมและการจัดวางต่างกันตามบทบาท (ผู้ดูแลใช้ธีมแดชบอร์ดสีเข้ม)
   $('#who-name').textContent = S.me.name;
   $('#who-role').textContent = ROLE_LABEL[S.me.role];
 }
@@ -48,6 +49,7 @@ async function showLogin() {
   for (const k of Object.keys(tickets)) delete tickets[k];
   openTickets.clear();
   $('#topbar').hidden = true; $('#main').hidden = true; $('#view-login').hidden = false;
+  document.body.className = '';
   closeNav(true);
   let accounts = [];
   try { accounts = await (await fetch('/api/demo-accounts')).json(); } catch { /* แสดงเฉพาะฟอร์มรหัสผ่าน */ }
@@ -83,6 +85,90 @@ async function doLogin(path, body) {
 $('#quick-login').addEventListener('click', (e) => { const b = e.target.closest('[data-quick]'); if (b) doLogin('/login/quick', { user_id: Number(b.dataset.quick) }); });
 $('#login-form').addEventListener('submit', (e) => { e.preventDefault(); doLogin('/login', { username: $('#login-user').value, password: $('#login-pass').value }); });
 $('#logout').addEventListener('click', async () => { try { await api('/logout', {}); } catch { /* ออกจากหน้าจออยู่ดี */ } history.replaceState(null, '', location.pathname); showLogin(); });
+
+// ---------- แดชบอร์ดของผู้ดูแล ----------
+// สีของประเภทวัสดุในวงแหวน: ลำดับคงที่ ผ่านการตรวจการแยกแยะสีบนพื้นเข้มแล้ว และมีป้ายชื่อกับตัวเลขกำกับทุกส่วน
+const TYPE_COLOR = { plastic: '#3987e5', paper: '#d95926', metal: '#199e70', glass: '#c98500' };
+const TYPE_NAME = { plastic: 'พลาสติก', paper: 'กระดาษ', metal: 'โลหะ', glass: 'แก้ว' };
+
+function donut(parts, total) {
+  const R = 42, C = 2 * Math.PI * R, gap = parts.length > 1 ? 2.5 : 0;
+  let acc = 0;
+  const arcs = parts.map((p) => {
+    const len = (p.value / total) * C, seg = `<circle r="${R}" cx="60" cy="60" fill="none" stroke="${p.color}" stroke-width="14" stroke-dasharray="${Math.max(0.5, len - gap)} ${C}" stroke-dashoffset="${-acc}"><title>${p.label} ${num(p.value, 1)} กก.</title></circle>`;
+    acc += len;
+    return seg;
+  }).join('');
+  return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="สัดส่วนน้ำหนักของวัสดุที่รอรับ"><g transform="rotate(-90 60 60)">${arcs}</g>
+    <text x="60" y="58" text-anchor="middle" class="donut-num">${num(total, 1)}</text><text x="60" y="74" text-anchor="middle" class="donut-unit">กก. รอรับ</text></svg>`;
+}
+
+function renderDashWidgets(plan, pending, stops) {
+  const kg = {};
+  for (const r of pending) for (const m of r.materials) { const t = S.config.materials[m.material]?.factory; if (t) kg[t] = (kg[t] || 0) + m.share * r.est_kg; }
+  const parts = Object.keys(TYPE_COLOR).filter((t) => kg[t] > 0).map((t) => ({ label: TYPE_NAME[t], value: kg[t], color: TYPE_COLOR[t] }));
+  const total = parts.reduce((a, p) => a + p.value, 0);
+  const routeOf = Object.fromEntries(plan.routes.map((r) => [r.vehicle_id, r]));
+  const byId = Object.fromEntries(S.requests.map((r) => [r.id, r]));
+  const flagged = S.requests.filter((r) => r.flags.length).length, waiting = S.notices.filter((n) => !n.ack_at).length;
+  $('#dash-widgets').innerHTML = `
+    <section class="card widget"><h2>งานวันนี้</h2>
+      <p class="big-num">${num(stops)}<small>/${num(pending.length)} จุดที่จัดลงรถ</small></p>
+      <div class="mini-stats"><div><b>${num(plan.total_km, 1)}</b><span>กม. รวม</span></div><div><b>${plan.baseline_km > 0 ? num(plan.saving_pct) + '%' : '–'}</b><span>สั้นกว่าลำดับแจ้ง</span></div>
+        <div><b>${num(pending.reduce((a, r) => a + r.bags.length, 0))}</b><span>ถุงรอรับ</span></div></div></section>
+    <section class="card widget"><h2>วัสดุที่รอรับ</h2>
+      ${total ? `<div class="donut-wrap">${donut(parts, total)}<ul class="legend-list">${parts.map((p) => `<li><span class="sw" style="background:${p.color}"></span>${p.label} ${num((p.value / total) * 100)}%<b>${num(p.value, 1)} กก.</b></li>`).join('')}</ul></div>`
+        : '<p class="muted">ไม่มีงานรอรับ</p>'}</section>
+    <section class="card widget"><h2>รถ</h2>
+      ${S.vehicles.map((v) => {
+        const r = routeOf[v.id], n = r ? r.stops.length : 0, done = r ? r.stops.filter((s) => byId[s.request_id] && isDone(byId[s.request_id])).length : 0;
+        return `<div class="veh"><div class="row between"><strong><span class="veh-dot" style="background:${esc(v.color)};display:inline-block"></span> ${esc(v.name)}</strong>${v.active ? `<span class="muted">${r && n ? `กลับ ${hhmm(r.back_at)}` : 'ไม่มีงาน'}</span>` : '<span class="badge warn">หยุดใช้งาน</span>'}</div>
+          <div class="pbar" title="ใช้พื้นที่ ${num(r?.load_units)}/${num(v.capacity_units)} ถุง"><span style="width:${r ? Math.round((r.load_units / v.capacity_units) * 100) : 0}%;background:${esc(v.color)}"></span></div>
+          <div class="pbar-label"><span>พื้นที่ ${num(r?.load_units)}/${num(v.capacity_units)} ถุง</span><span>รับแล้ว ${num(done)}/${num(n)} จุด</span></div></div>`;
+      }).join('')}</section>
+    <section class="card widget"><h2>ต้องดูแล</h2>
+      <ul class="status-list">
+        <li><span class="st ${flagged ? 'warn' : 'ok'}"></span>กรณีผ่อนปรนหรือต้องตรวจ<b>${num(flagged)}</b></li>
+        <li><span class="st ${plan.unassigned.length ? 'warn' : 'ok'}"></span>จุดที่จัดรถไม่ลง<b>${num(plan.unassigned.length)}</b></li>
+        <li><span class="st ${waiting ? 'warn' : 'ok'}"></span>ข้อความที่คู่ค้ายังไม่รับทราบ<b>${num(waiting)}</b></li>
+        <li><span class="st ${S.ai_mode === 'claude' ? 'ok' : 'warn'}"></span>AI<b>${S.ai_mode === 'claude' ? 'พร้อมใช้' : 'โหมดจำลอง'}</b></li>
+      </ul></section>`;
+  drawWeekly();
+}
+
+function drawWeekly() {
+  const rows = S.weekly, v = rows.map((r) => r.kg);
+  const W = 900, H = 230, L = 46, R = 24, T = 18, B = 30, hi = Math.max(...v, 1) * 1.15;
+  const x = (i) => L + (i / (rows.length - 1)) * (W - L - R), y = (p) => T + ((hi - p) / hi) * (H - T - B);
+  const line = rows.map((r, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(r.kg).toFixed(1)}`).join('');
+  const wk = (iso) => thDay(iso);
+  const sum = v.reduce((a, b) => a + b, 0);
+  $('#dash-weekly').innerHTML = `<div class="row between"><h2>น้ำหนักที่รับจริงรายสัปดาห์ (กก.)</h2><span class="muted">${rows.length} สัปดาห์ล่าสุด รวม ${num(sum, 1)} กก.</span></div>
+    <div class="chart" id="weekly-chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="กราฟน้ำหนักที่รับจริงรายสัปดาห์">
+      ${niceTicks(0, hi).map((t) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text class="axis" x="${L - 8}" y="${y(t) + 4}" text-anchor="end">${num(t)}</text>`).join('')}
+      ${rows.map((r, i) => `<text class="axis" x="${x(i)}" y="${H - 9}" text-anchor="middle">${wk(r.week)}</text>`).join('')}
+      <path class="area" d="${line}L${x(rows.length - 1)} ${H - B}L${L} ${H - B}Z"/><path class="line" d="${line}"/>
+      ${rows.map((r, i) => `<circle class="end" cx="${x(i)}" cy="${y(r.kg)}" r="4"/>`).join('')}
+      <line class="cross" id="wk-cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+      <rect id="wk-hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>
+    </svg><div class="chart-tip" id="wk-tip" hidden></div></div>
+    <details class="data-table"><summary>ดูเป็นตาราง</summary><div class="table-wrap"><table><thead><tr><th>สัปดาห์ที่เริ่ม</th><th>น้ำหนัก (กก.)</th><th>จำนวนครั้งที่รับ</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td>${wk(r.week)}</td><td class="num">${num(r.kg, 1)}</td><td class="num">${num(r.pickups)}</td></tr>`).join('')}</tbody></table></div></details>`;
+  const svg = $('#weekly-chart svg'), tip = $('#wk-tip'), cross = $('#wk-cross');
+  const move = (e) => {
+    const box = svg.getBoundingClientRect(), px = ((e.clientX - box.left) / box.width) * W;
+    const i = Math.max(0, Math.min(rows.length - 1, Math.round(((px - L) / (W - L - R)) * (rows.length - 1))));
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    tip.hidden = false;
+    tip.replaceChildren(Object.assign(document.createElement('strong'), { textContent: `${num(rows[i].kg, 1)} กก.` }), Object.assign(document.createElement('span'), { textContent: `สัปดาห์ ${wk(rows[i].week)} · ${num(rows[i].pickups)} ครั้ง` }));
+    const left = (x(i) / W) * box.width;
+    tip.style.left = `${Math.min(box.width - 150, Math.max(0, left + (left > box.width / 2 ? -160 : 12)))}px`;
+    tip.style.top = `${(y(rows[i].kg) / H) * box.height - 10}px`;
+  };
+  $('#wk-hit').addEventListener('pointermove', move);
+  $('#wk-hit').addEventListener('pointerdown', move);
+  $('#wk-hit').addEventListener('pointerleave', () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); });
+}
 
 // ---------- กระดานราคา ----------
 let priceData = null, priceAt = 0, priceDays = 30, priceSel = null;
@@ -131,7 +217,10 @@ function drawPriceDetail(m) {
   if (!m) return;
   const s = m.view, v = s.map((p) => p.price);
   const W = 680, H = 260, L = 46, R = 58, T = 14, B = 28;
-  const pad = (Math.max(...v) - Math.min(...v)) * 0.15 || 0.5, lo = Math.min(...v) - pad, hi = Math.max(...v) + pad;
+  // กรอบราคาอ้างอิงจากแหล่งภายนอก (รายการแรกที่เป็นราคาต่อกิโลกรัม) แสดงเป็นแถบบนกราฟถ้ามี
+  const band = m.refs.find((r) => priceData.sources[r.source].unit === 'บาท/กก.');
+  const all = band ? [...v, band.low, band.high] : v;
+  const pad = (Math.max(...all) - Math.min(...all)) * 0.12 || 0.5, lo = Math.min(...all) - pad, hi = Math.max(...all) + pad;
   const x = (i) => L + (i / (s.length - 1)) * (W - L - R), y = (p) => T + ((hi - p) / (hi - lo)) * (H - T - B);
   const line = s.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p.price).toFixed(1)}`).join('');
   const ticks = niceTicks(lo, hi);
@@ -146,6 +235,8 @@ function drawPriceDetail(m) {
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="กราฟราคารับซื้อสูงสุดของ${esc(m.label)} ย้อนหลัง ${s.length} วัน">
         ${ticks.map((t) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text class="axis" x="${L - 8}" y="${y(t) + 4}" text-anchor="end">${num(t, dec)}</text>`).join('')}
         ${xl.map((i, n) => `<text class="axis" x="${x(i)}" y="${H - 8}" text-anchor="${n === 0 ? 'start' : n === 2 ? 'end' : 'middle'}">${thDay(s[i].day)}</text>`).join('')}
+        ${band ? `<rect class="band" x="${L}" width="${W - L - R}" y="${y(band.high)}" height="${Math.max(2, y(band.low) - y(band.high))}"/>
+          <text class="axis" x="${L + 6}" y="${y(band.high) - 5}">ช่วงราคาอ้างอิง ${num(band.low, 2)}–${num(band.high, 2)} (${esc(priceData.sources[band.source].name)})</text>` : ''}
         <path class="area" d="${line}L${x(s.length - 1)} ${H - B}L${L} ${H - B}Z"/>
         <path class="line" d="${line}"/>
         <line class="cross" id="pc-cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
@@ -154,13 +245,20 @@ function drawPriceDetail(m) {
         <circle class="end" id="pc-dot" r="4.5" visibility="hidden"/>
         <rect id="pc-hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>
       </svg>
-      <div class="tip" id="pc-tip" hidden></div>
+      <div class="chart-tip" id="pc-tip" hidden></div>
     </div>
     <p class="muted">เส้นคือราคารับซื้อสูงสุดจากคู่ค้าทุกรายในแต่ละวัน ราคาที่ระบบใช้ประเมินให้สมาชิกตอนนี้คือ ${num(m.member_price, 2)} บาท/กก.${m.accepted ? '' : ' (เกณฑ์ปัจจุบันไม่รับวัสดุนี้)'}</p>
     <h3>ราคาล่าสุดของคู่ค้าแต่ละราย</h3>
-    <div class="table-wrap"><table><thead><tr><th>คู่ค้า</th><th>ประเภท</th><th>ราคา (บาท/กก.)</th><th>ส่วนต่างจากราคาที่ให้สมาชิก</th></tr></thead><tbody>
-      ${m.offers.map((o) => `<tr><td>${esc(o.name)}</td><td>${o.kind === 'factory' ? 'โรงงาน' : 'ร้านรับซื้อ'}</td><td class="num">${num(o.price, 2)}</td><td class="num">${o.price - m.member_price >= 0 ? '+' : '−'}${num(Math.abs(o.price - m.member_price), 2)}</td></tr>`).join('')}
+    <div class="table-wrap"><table><thead><tr><th>คู่ค้า</th><th>ประเภท</th><th>ราคา (บาท/กก.)</th><th>ส่วนต่างจากราคาที่ให้สมาชิก</th><th>ที่มาของราคานี้</th></tr></thead><tbody>
+      ${m.offers.map((o) => `<tr><td>${esc(o.name)}</td><td>${o.kind === 'factory' ? 'โรงงาน' : 'ร้านรับซื้อ'}</td><td class="num">${num(o.price, 2)}</td><td class="num">${o.price - m.member_price >= 0 ? '+' : '−'}${num(Math.abs(o.price - m.member_price), 2)}</td>
+        <td>${o.entered_at ? `<span class="badge">คู่ค้าบันทึกเอง</span> ${thDay(o.day)} ${timeText(o.entered_at)}` : '<span class="badge gray">ข้อมูลจำลอง</span>'}</td></tr>`).join('')}
     </tbody></table></div>
+    <h3>ที่มาอ้างอิงของราคา</h3>
+    <p class="muted">ราคาในกราฟและราคาที่ติดป้าย “ข้อมูลจำลอง” ถูกสุ่มขึ้นให้อยู่ในช่วงของแหล่งอ้างอิงแรกในตาราง ราคาที่ติดป้าย “คู่ค้าบันทึกเอง” มาจากคู่ค้าในระบบ ราคาอ้างอิงด้านล่างเป็นราคาในอดีตตามวันที่ของแต่ละแหล่ง ไม่ใช่ราคาวันนี้</p>
+    ${m.refs.length ? `<div class="table-wrap"><table><thead><tr><th>รายการตามต้นฉบับ</th><th>ราคา</th><th>หน่วย</th><th>แหล่งที่มา</th></tr></thead><tbody>
+      ${m.refs.map((r) => { const src = priceData.sources[r.source]; return `<tr><td>${esc(r.item)}</td><td class="num">${r.low === r.high ? num(r.low, 2) : `${num(r.low, 2)}–${num(r.high, 2)}`}</td><td>${esc(src.unit)}</td>
+        <td><a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.name)}</a><br><span class="muted">${esc(src.published)} · ${esc(src.basis)}</span></td></tr>`; }).join('')}
+    </tbody></table></div>` : '<p class="muted">ยังไม่พบแหล่งอ้างอิงภายนอกของวัสดุนี้</p>'}
     <details class="data-table"><summary>ดูราคารายวันเป็นตาราง</summary><div class="table-wrap"><table><thead><tr><th>วันที่</th><th>ราคาสูงสุด (บาท/กก.)</th></tr></thead><tbody>
       ${[...s].reverse().map((p) => `<tr><td>${thDay(p.day)}</td><td class="num">${num(p.price, 2)}</td></tr>`).join('')}</tbody></table></div></details>`;
 
@@ -327,8 +425,8 @@ async function renderCarbon() {
   if (!carbonData || Date.now() - carbonAt > 15000) {
     try { carbonData = await api('/carbon'); carbonAt = Date.now(); } catch (e) { return toast(e.message); }
   }
-  if ($('#carbon-body').contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
-  const c = carbonData, admin = S.me.role === 'admin', t = c.total, f = c.factors;
+  if ($('#carbon-body').contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
+  const c = carbonData, admin = S.me.role === 'admin', t = c.total, f = c.factors, fs = c.factor_source;
   const co2Rows = Object.entries(t.by_material).filter(([k]) => f[k]).map(([k, kg]) => ({ label: f[k].label, value: kg * f[k].kg_co2e_per_kg })).sort((a, b) => b.value - a.value);
   const maxMonth = Math.max(...c.monthly.map((m) => m.co2e_kg), 1e-9);
   const month = (m) => new Date(m + '-01T00:00:00').toLocaleDateString('th-TH', { month: 'short', year: '2-digit' });
@@ -352,15 +450,95 @@ async function renderCarbon() {
       <div class="totals" id="calc-out"></div></div>
     <div class="card"><h2>ที่มาของตัวเลข และข้อจำกัด</h2>
       <ul class="notes">
-        <li>ปัจจัยที่ใช้คือค่าการปล่อยสุทธิของการรีไซเคิลจาก US EPA WARM รุ่น 16 แปลงเป็น kgCO2e ต่อกิโลกรัม เป็นค่าของสหรัฐฯ ไม่ใช่ของไทย</li>
+        <li>ปัจจัยที่ใช้อยู่มาจาก <strong>${esc(fs.source)}</strong>${fs.version ? ` (${esc(fs.version)})` : ''}${fs.reference_url ? ` <a href="${esc(fs.reference_url)}" target="_blank" rel="noopener">เอกสารอ้างอิง</a>` : ''}${fs.is_default ? ' ซึ่งเป็นค่าการปล่อยสุทธิของการรีไซเคิลของสหรัฐฯ ไม่ใช่ของไทย' : ` อัปเดตเมื่อ ${new Date(fs.updated_at * 1000).toLocaleString('th-TH')} โดย ${esc(fs.updated_by)}`}</li>
         <li>ตัวเลขนี้เป็นประมาณการสำหรับรายงานภายในและงาน ESG ยังไม่ใช่คาร์บอนเครดิตที่ซื้อขายได้</li>
         <li>การขอคาร์บอนเครดิต เช่น T-VER ของ อบก. ต้องขึ้นทะเบียนโครงการ ใช้ระเบียบวิธีที่รับรอง และผ่านการทวนสอบโดยผู้ประเมินภายนอก</li>
         <li>ราคาคาร์บอนที่ใช้ตีมูลค่าเป็นค่าสมมติ ผู้ดูแลระบบแก้ได้ที่หน้าเกณฑ์รับของ</li>
       </ul>
       <div class="table-wrap"><table><thead><tr><th>วัสดุ</th><th>kgCO2e ที่หลีกเลี่ยงได้ต่อ 1 กก.</th></tr></thead><tbody>
-      ${Object.values(f).map((m) => `<tr><td>${esc(m.label)}</td><td class="num">${num(m.kg_co2e_per_kg, 2)}</td></tr>`).join('')}</tbody></table></div></div>`;
+      ${Object.values(f).map((m) => `<tr><td>${esc(m.label)}</td><td class="num">${num(m.kg_co2e_per_kg, 2)}</td></tr>`).join('')}</tbody></table></div></div>
+    ${admin ? carbonAdminHtml(c) : ''}`;
   calcCarbon();
 }
+let newToken = null;   // โทเคนที่เพิ่งสร้าง แสดงครั้งเดียวจนกว่าผู้ดูแลจะปิด
+
+function carbonAdminHtml(c) {
+  const fs = c.factor_source, origin = location.origin;
+  const companies = S.members.filter((m) => m.kind === 'company');
+  return `
+    <div class="card"><h2>ค่าปัจจัยการปล่อย</h2>
+      <p class="muted">ใส่ค่าที่ อบก. หรือแหล่งอื่นประกาศ เพื่อใช้แทนค่าตั้งต้น ค่าที่บันทึกมีผลกับการคำนวณทั้งระบบทันที และส่งเข้ามาผ่าน API ได้ด้วย</p>
+      <form id="factor-form">
+        <div class="form-grid">
+          <label>ที่มาของค่า<input type="text" name="source" value="${fs.is_default ? '' : esc(fs.source)}" placeholder="เช่น อบก. (TGO)" required></label>
+          <label>รุ่นหรือฉบับ<input type="text" name="version" value="${fs.is_default ? '' : esc(fs.version)}"></label>
+          <label>ลิงก์เอกสารอ้างอิง<input type="text" name="reference_url" value="${fs.is_default ? '' : esc(fs.reference_url)}"></label>
+          <label>วันที่มีผล<input type="text" name="effective_date" value="${fs.is_default ? '' : esc(fs.effective_date)}" placeholder="ปปปป-ดด-วว"></label>
+        </div>
+        <div class="calc">${Object.entries(c.factors).map(([k, m]) => `<label><span><span class="dot mat-${k}"></span> ${esc(m.label)}</span><span class="unit"><input type="number" min="0" max="100" step="0.001" name="f:${k}" value="${m.kg_co2e_per_kg}"><small>kgCO2e/กก.</small></span></label>`).join('')}</div>
+        <div class="row"><button class="btn primary" type="submit">บันทึกค่าปัจจัย</button>
+          ${fs.is_default ? '' : '<button class="btn ghost" type="button" data-factor-reset>กลับไปใช้ค่าตั้งต้น</button>'}</div>
+      </form></div>
+    <div class="card"><h2>API สำหรับระบบภายนอก</h2>
+      <p class="muted">ระบบอื่นดึงข้อมูลคาร์บอน หรือส่งค่าปัจจัยเข้ามาได้ ด้วยโทเคนของระบบในส่วนหัว <code>Authorization: Bearer</code></p>
+      <div class="table-wrap"><table><thead><tr><th>เส้นทาง</th><th>สิทธิ์</th><th>ใช้ทำอะไร</th></tr></thead><tbody>
+        <tr><td><code>GET /api/v1/carbon/summary</code></td><td>carbon:read</td><td>ยอดรวม รายเดือน และรายสมาชิก</td></tr>
+        <tr><td><code>GET /api/v1/carbon/members/{id}</code></td><td>carbon:read</td><td>ข้อมูลของสมาชิกรายเดียว</td></tr>
+        <tr><td><code>GET /api/v1/carbon/factors</code></td><td>carbon:read</td><td>ค่าปัจจัยที่ใช้อยู่และที่มา</td></tr>
+        <tr><td><code>PUT /api/v1/carbon/factors</code></td><td>carbon:write</td><td>ส่งค่าปัจจัยชุดใหม่เข้ามา เช่น ค่าจาก อบก.</td></tr>
+        <tr><td><code>DELETE /api/v1/carbon/factors</code></td><td>carbon:write</td><td>กลับไปใช้ค่าตั้งต้น</td></tr>
+      </tbody></table></div>
+      <pre class="code-block">curl -H "Authorization: Bearer &lt;โทเคน&gt;" ${origin}/api/v1/carbon/summary
+
+curl -X PUT ${origin}/api/v1/carbon/factors \\
+  -H "Authorization: Bearer &lt;โทเคน&gt;" -H "Content-Type: application/json" \\
+  -d '{"source": "อบก. (TGO)", "version": "2569", "factors": {"pet": 1.2, "cardboard": 3.1}}'</pre>
+      <h3>โทเคนของระบบ</h3>
+      ${newToken ? `<div class="notice ok"><strong>คัดลอกโทเคนนี้ตอนนี้ ระบบจะไม่แสดงอีก</strong><br><code class="token">${esc(newToken)}</code>
+        <div class="row" style="margin-top:.4rem"><button type="button" class="btn ghost small" data-token-copy>คัดลอก</button><button type="button" class="btn ghost small" data-token-hide>ปิด</button></div></div>` : ''}
+      <form id="token-form" class="form-grid">
+        <label>ชื่อโทเคน<input type="text" name="name" placeholder="เช่น ระบบ ESG ของบริษัท" required maxlength="60"></label>
+        <label>สิทธิ์<select name="scope"><option value="read">อ่านข้อมูลคาร์บอน</option><option value="write">อ่าน และส่งค่าปัจจัยเข้ามา</option></select></label>
+        <label>ขอบเขตข้อมูล<select name="member"><option value="">ทุกสมาชิก</option>${companies.map((m) => `<option value="${m.id}">เฉพาะ ${esc(m.name)}</option>`).join('')}</select></label>
+        <button class="btn primary" type="submit">สร้างโทเคน</button>
+      </form>
+      ${S.tokens.length ? `<div class="table-wrap"><table><thead><tr><th>ชื่อ</th><th>ขึ้นต้นด้วย</th><th>สิทธิ์</th><th>ขอบเขต</th><th>ใช้ล่าสุด</th><th></th></tr></thead><tbody>
+        ${S.tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td>${t.scopes.map((x) => `<span class="badge gray">${esc(x)}</span>`).join(' ')}</td>
+          <td>${t.member_name ? esc(t.member_name) : 'ทุกสมาชิก'}</td><td>${t.last_used_at ? new Date(t.last_used_at * 1000).toLocaleString('th-TH') : 'ยังไม่เคยใช้'}</td>
+          <td>${t.revoked_at ? '<span class="badge warn">ยกเลิกแล้ว</span>' : `<button type="button" class="btn ghost small" data-token-revoke="${t.id}">ยกเลิก</button>`}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="muted">ยังไม่มีโทเคน</p>'}
+    </div>`;
+}
+
+async function reloadCarbon() { carbonData = null; document.activeElement?.blur(); await refresh(); await renderCarbon(); }
+
+$('#carbon-body').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(e.target);
+  try {
+    if (e.target.id === 'factor-form') {
+      const factors = {};
+      for (const [k, v] of data) if (k.startsWith('f:')) factors[k.slice(2)] = Number(v);
+      await api('/v1/carbon/factors', { source: data.get('source'), version: data.get('version'), reference_url: data.get('reference_url'), effective_date: data.get('effective_date'), factors }, 'PUT');
+      toast('บันทึกค่าปัจจัยแล้ว การคำนวณทั้งระบบใช้ค่าชุดนี้');
+    } else if (e.target.id === 'token-form') {
+      const res = await api('/admin/tokens', { name: data.get('name'), scopes: data.get('scope') === 'write' ? ['carbon:read', 'carbon:write'] : ['carbon:read'], member_id: data.get('member') ? Number(data.get('member')) : null });
+      newToken = res.token;
+      toast('สร้างโทเคนแล้ว คัดลอกเก็บไว้ทันที');
+    }
+    await reloadCarbon();
+  } catch (err) { toast(err.message); }
+});
+$('#carbon-body').addEventListener('click', async (e) => {
+  const d = e.target.dataset;
+  try {
+    if (d.tokenRevoke) { if (!confirm('ยกเลิกโทเคนนี้ใช่ไหม ระบบที่ใช้โทเคนนี้จะเรียก API ไม่ได้ทันที')) return; await api(`/admin/tokens/${d.tokenRevoke}/revoke`, {}); await reloadCarbon(); }
+    else if (d.tokenHide !== undefined) { newToken = null; await reloadCarbon(); }
+    else if (d.tokenCopy !== undefined) { await navigator.clipboard.writeText(newToken); toast('คัดลอกโทเคนแล้ว'); }
+    else if (d.factorReset !== undefined) { await api('/v1/carbon/factors', {}, 'DELETE'); toast('กลับไปใช้ค่าตั้งต้นแล้ว'); await reloadCarbon(); }
+  } catch (err) { toast(err.message); }
+});
+
 function calcCarbon() {
   if (!carbonData) return;
   let kg = 0, co2 = 0;

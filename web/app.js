@@ -389,11 +389,7 @@ function renderDispatch() {
 
   const pending = S.requests.filter(isOpen);
   const stops = plan.routes.reduce((a, r) => a + r.stops.filter((s) => byId[s.request_id] && isOpen(byId[s.request_id])).length, 0);
-  $('#plan-stats').innerHTML = `
-    <div class="stat"><b>${num(stops)}/${num(pending.length)}</b><span>จุดที่จัดลงรถ</span></div>
-    <div class="stat"><b>${num(plan.total_km, 1)} กม.</b><span>ระยะทางรวม</span></div>
-    <div class="stat accent"><b>${plan.baseline_km > 0 ? num(plan.saving_pct) + '%' : '–'}</b><span>สั้นกว่าวิ่งตามลำดับแจ้ง</span></div>
-    <div class="stat"><b>${num(pending.reduce((a, r) => a + r.bags.length, 0))}</b><span>ถุงที่รอรับ</span></div>`;
+  renderDashWidgets(plan, pending, stops);
   $('#plan-summary').textContent = plan.summary || '';
 
   const routeOf = Object.fromEntries(plan.routes.map((r) => [r.vehicle_id, r]));

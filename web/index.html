@@ -112,17 +112,18 @@
 
     <!-- ผู้จัดรถ -->
     <section id="view-dispatch" class="view wide" hidden>
+      <div class="page-head">
+        <div><h1>แดชบอร์ดจัดรถ</h1><p class="muted" id="plan-summary"></p></div>
+        <div class="row">
+          <button id="replan" class="btn primary" type="button">จัดเส้นทางใหม่</button>
+          <button id="reset" class="btn ghost" type="button">รีเซ็ตข้อมูลตัวอย่าง</button>
+        </div>
+      </div>
+      <div id="dash-widgets" class="widgets"></div>
+      <div class="card" id="dash-weekly"></div>
       <div class="dispatch-grid">
         <div id="dispatch-map" class="map big"></div>
         <aside class="side">
-          <div class="card">
-            <div id="plan-stats" class="stat-grid"></div>
-            <p id="plan-summary" class="muted"></p>
-            <div class="row">
-              <button id="replan" class="btn primary" type="button">จัดเส้นทางใหม่</button>
-              <button id="reset" class="btn ghost" type="button">รีเซ็ตข้อมูลตัวอย่าง</button>
-            </div>
-          </div>
           <div class="card ai-card">
             <h2><span class="badge ai">AI</span> สั่งด้วยภาษาพูด</h2>
             <form id="command-form" class="command">
@@ -193,7 +194,7 @@
       <div class="page-head">
         <div>
           <h1>ราคารับซื้อวันนี้</h1>
-          <p class="muted">ราคาสูงสุดที่คู่ค้าเสนอ หน่วยบาทต่อกิโลกรัม · ข้อมูลตัวอย่าง ไม่ใช่ราคาตลาดจริง</p>
+          <p class="muted">ราคาสูงสุดที่คู่ค้าในระบบเสนอ หน่วยบาทต่อกิโลกรัม · ประวัติราคาเป็นข้อมูลจำลองในกรอบของราคาอ้างอิง ดูที่มาใต้กราฟ</p>
         </div>
         <div class="seg" id="price-range" role="group" aria-label="ช่วงเวลาของกราฟ">
           <button type="button" data-days="7">7 วัน</button><button type="button" data-days="30" class="active">30 วัน</button><button type="button" data-days="60">60 วัน</button>

@@ -7,12 +7,12 @@
 # price = บาทต่อกิโลกรัมที่ใช้ประเมินมูลค่าให้สมาชิก, unit_kg = น้ำหนักเฉลี่ยต่อชิ้น (กก.), factory = ประเภทโรงงานปลายทาง
 MATERIALS = {
     "pet": {"label": "ขวดพลาสติกใส (PET)", "price": 8, "unit_kg": 0.025, "factory": "plastic"},
-    "hdpe": {"label": "พลาสติกขุ่น (HDPE)", "price": 10, "unit_kg": 0.05, "factory": "plastic"},
+    "hdpe": {"label": "พลาสติกขุ่น (HDPE)", "price": 6, "unit_kg": 0.05, "factory": "plastic"},
     "other_plastic": {"label": "พลาสติกอื่น ๆ", "price": 2, "unit_kg": 0.02, "factory": "plastic"},
-    "cardboard": {"label": "กระดาษลัง", "price": 3, "unit_kg": 0.35, "factory": "paper"},
-    "paper": {"label": "กระดาษ", "price": 4, "unit_kg": 0.15, "factory": "paper"},
-    "aluminum": {"label": "กระป๋องอะลูมิเนียม", "price": 40, "unit_kg": 0.015, "factory": "metal"},
-    "steel": {"label": "กระป๋องเหล็ก/โลหะ", "price": 6, "unit_kg": 0.05, "factory": "metal"},
+    "cardboard": {"label": "กระดาษลัง", "price": 2, "unit_kg": 0.35, "factory": "paper"},
+    "paper": {"label": "กระดาษ", "price": 2, "unit_kg": 0.15, "factory": "paper"},
+    "aluminum": {"label": "กระป๋องอะลูมิเนียม", "price": 45, "unit_kg": 0.015, "factory": "metal"},
+    "steel": {"label": "กระป๋องเหล็ก/โลหะ", "price": 2.5, "unit_kg": 0.05, "factory": "metal"},
     "glass": {"label": "ขวดแก้ว", "price": 1, "unit_kg": 0.3, "factory": "glass"},
     "non_recyclable": {"label": "ไม่รับ", "price": 0, "unit_kg": 0, "factory": None},
 }
@@ -77,6 +77,36 @@ FLAGS = {
     "weight_diff": "น้ำหนักจริงต่างจากที่ประเมินเกินเกณฑ์",
 }
 
+# ---------- แหล่งอ้างอิงของราคารับซื้อ ----------
+# ตัวเลขด้านล่างคัดจากหน้าเว็บของแหล่งข่าว (เปิดอ่านเมื่อ 23 พ.ย. 2569) เป็นราคาในอดีต ไม่ใช่ราคาปัจจุบัน
+# ใช้เป็นกรอบตั้งต้นของข้อมูลราคาจำลอง และแสดงเป็นที่มาอ้างอิงในหน้ากระดานราคา
+PRICE_SOURCES = {
+    "sanook2568": {
+        "name": "Sanook News", "url": "https://www.sanook.com/news/9853242/",
+        "published": "28 ต.ค. 2568", "unit": "บาท/กก.",
+        "basis": "ราคาโดยประมาณจากโรงงานและร้านรับซื้อของเก่าทั่วประเทศ ช่วง ส.ค.–ต.ค. 2568",
+    },
+    "wongpanit2565": {
+        "name": "กรุงเทพธุรกิจ (อ้างราคากลางของวงษ์พาณิชย์)", "url": "https://www.bangkokbiznews.com/social/1003317",
+        "published": "ข้อมูล ณ 9 พ.ค. 2565", "unit": "บาทต่อหน่วย",
+        "basis": "ราคากลางจากวงษ์พาณิชย์ ต้นฉบับระบุว่ากระป๋อง กระดาษ และขวดพลาสติกมักชั่งเป็นกิโลกรัม ส่วนขวดแก้วขายเป็นขวด",
+    },
+}
+# วัสดุ: [(แหล่ง, ชื่อรายการตามต้นฉบับ, ราคาต่ำ, ราคาสูง)] รายการแรกของแต่ละวัสดุใช้เป็นกรอบของข้อมูลจำลอง
+PRICE_REFS = {
+    "pet": [("sanook2568", "ขวด PET ใส", 9.00, 10.50), ("wongpanit2565", "ขวดน้ำ PET ใส", 13.20, 14.20)],
+    "hdpe": [("sanook2568", "พลาสติกขุ่น (HDPE)", 8.00, 8.00), ("wongpanit2565", "ขวดน้ำขาวขุ่น (HDPE)", 5.00, 5.00)],
+    "other_plastic": [("sanook2568", "พลาสติกกรอบ/แก้วน้ำ", 3.00, 3.80)],
+    "cardboard": [("sanook2568", "กระดาษลัง", 2.45, 3.80), ("wongpanit2565", "กล่องกระดาษแข็งน้ำตาล", 5.50, 5.80)],
+    "paper": [("sanook2568", "กระดาษเศษ/จั๊บ", 2.00, 3.00), ("sanook2568", "กระดาษขาว-ดำแผ่น", 4.00, 5.30),
+              ("wongpanit2565", "กระดาษหนังสือพิมพ์ หนังสือเล่ม", 3.20, 3.20)],
+    "aluminum": [("sanook2568", "อลูมิเนียมกระป๋อง", 60.00, 67.00), ("wongpanit2565", "กระป๋องอะลูมิเนียม", 53.00, 53.00)],
+    "steel": [("sanook2568", "เหล็กบาง/สังกะสี", 2.60, 3.80), ("sanook2568", "เหล็กหนา", 7.00, 9.00)],
+    # ขวดแก้ว: แหล่งที่พบให้ราคาต่อขวด ไม่มีราคาต่อกิโลกรัม จึงไม่ใช้เป็นกรอบของข้อมูลจำลอง
+    "glass": [("wongpanit2565", "ขวดเบียร์สีเขียว (ต่อขวด)", 0.50, 0.50), ("wongpanit2565", "ขวดเบียร์สีชา (ต่อขวด)", 0.30, 0.30)],
+}
+PRICE_FRAME = {k: v[0][2:] for k, v in PRICE_REFS.items() if k != "glass"}   # (ต่ำ, สูง) ต่อกิโลกรัม
+
 # ---------- คาร์บอน ----------
 # ปัจจัยการปล่อยสุทธิของการรีไซเคิล จาก US EPA WARM รุ่น 16 หน่วย MTCO2E ต่อ short ton (ค่าลบ = หลีกเลี่ยงการปล่อย)
 # ที่มา: Documentation for Greenhouse Gas Emission and Energy Factors Used in WARM, Management Practices Chapters (ธ.ค. 2566)
@@ -87,3 +117,9 @@ WARM_RECYCLING_MTCO2E_PER_SHORT_TON = {
     "aluminum": -9.13, "steel": -1.83, "glass": -0.28,
 }
 SHORT_TON_KG = 907.185
+CARBON_DEFAULT_META = {
+    "source": "US EPA WARM รุ่น 16", "version": "ธ.ค. 2566",
+    "reference_url": "https://www.epa.gov/system/files/documents/2024-01/warm_management_practices_v16_dec.pdf",
+    "effective_date": "2023-12-01",
+    "note": "ค่าตั้งต้นเป็นของสหรัฐฯ แทนที่ได้ด้วยค่าของ อบก. ผ่าน API หรือหน้าคาร์บอนของผู้ดูแล",
+}

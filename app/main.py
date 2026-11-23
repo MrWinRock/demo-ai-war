@@ -22,7 +22,8 @@ from pydantic import BaseModel
 import segno
 
 from . import ai, auth, carbon, db, routing, seed, settings
-from .config import BAG_TAGS, CODE_ALPHABET, DEPOT, FLAGS, MATERIALS, QR_PREFIX, SIZES, SLOT_BY_ID, SLOTS
+from .config import (BAG_TAGS, CODE_ALPHABET, DEPOT, FLAGS, MATERIALS, PRICE_REFS, PRICE_SOURCES, QR_PREFIX, SIZES,
+                     SLOT_BY_ID, SLOTS)
 from .estimate import aggregate_items, estimate
 
 BASE = Path(__file__).resolve().parent.parent
@@ -237,6 +238,21 @@ class NoticeIn(BaseModel):
     text: str
 
 
+class TokenIn(BaseModel):
+    name: str
+    scopes: list[str]
+    member_id: int | None = None   # ถ้าระบุ โทเคนเห็นข้อมูลของสมาชิกรายนี้เท่านั้น
+
+
+class FactorsIn(BaseModel):
+    source: str                    # ที่มาของค่า เช่น "อบก. (TGO)"
+    version: str = ""
+    reference_url: str = ""
+    effective_date: str = ""
+    note: str = ""
+    factors: dict[str, float]      # วัสดุ -> kgCO2e ที่หลีกเลี่ยงได้ต่อ 1 กก.
+
+
 # ---------- เข้าสู่ระบบ ----------
 
 def _session_response(user: dict) -> JSONResponse:
@@ -306,6 +322,7 @@ def state(u: dict = Depends(auth.current)):
             members=db.query("SELECT * FROM members ORDER BY id"), vehicles=db.query("SELECT * FROM vehicles ORDER BY id"),
             requests=load_requests(), plan=plan, stops=stops, dropoffs=json.loads(db.get_kv("dropoffs") or "[]")[-10:],
             partners=partners, notices=db.query("SELECT * FROM notices ORDER BY id DESC LIMIT 30"), settings=cfg,
+            tokens=list_tokens(), weekly=weekly_collected(),
         )
     elif u["role"] == "user":
         reqs = load_requests("WHERE r.member_id = ?", (u["ref_id"],))
@@ -591,9 +608,14 @@ def command(body: CommandIn, _: dict = Depends(auth.need("admin"))):
 @app.post("/api/reset")
 def reset(_: dict = Depends(auth.need("admin"))):
     sessions = db.query("SELECT * FROM sessions")  # บัญชีตัวอย่างมี id คงที่ จึงคงการเข้าสู่ระบบไว้ได้
+    tokens = db.query("SELECT * FROM api_tokens")  # โทเคนที่ระบบภายนอกใช้อยู่ ไม่ควรหายเมื่อรีเซ็ตข้อมูลตัวอย่าง
     reseed()
     for s in sessions:
         db.execute("INSERT INTO sessions(token, user_id, created_at) VALUES(?,?,?)", (s["token"], s["user_id"], s["created_at"]))
+    for t in tokens:
+        db.execute("INSERT INTO api_tokens(id, name, token_hash, prefix, scopes, member_id, created_at, last_used_at, revoked_at)"
+                   " VALUES(?,?,?,?,?,?,?,?,?)", tuple(t[k] for k in ("id", "name", "token_hash", "prefix", "scopes", "member_id",
+                                                                    "created_at", "last_used_at", "revoked_at")))
     return {"ok": True}
 
 
@@ -662,22 +684,27 @@ def today_prices() -> dict[int, dict[str, float]]:
 
 @app.get("/api/prices")
 def prices(days: int = 60, _: dict = Depends(auth.current)):
-    """กระดานราคา: ราคารับซื้อสูงสุดของแต่ละวัสดุในแต่ละวัน และราคาล่าสุดของคู่ค้าแต่ละราย"""
+    """กระดานราคา: ราคารับซื้อสูงสุดของแต่ละวัสดุในแต่ละวัน ราคาล่าสุดของคู่ค้าแต่ละรายพร้อมที่มา และราคาอ้างอิงจากภายนอก"""
     days = max(7, min(days, 120))
     since = (datetime.now(BKK).date() - timedelta(days=days - 1)).isoformat()
     rows = db.query("SELECT material, day, MAX(price) AS best FROM prices WHERE day >= ? GROUP BY material, day ORDER BY day", (since,))
+    latest = db.query("SELECT p.partner_id, p.material, p.price, p.day, p.entered_at FROM prices p"
+                      " JOIN (SELECT partner_id, material, MAX(day) AS day FROM prices GROUP BY partner_id, material) t"
+                      " ON t.partner_id = p.partner_id AND t.material = p.material AND t.day = p.day")
     mats = settings.materials()
     partners = {p["id"]: p for p in load_partners()}
-    latest = today_prices()
     out = []
     for key, m in mats.items():
         series = [{"day": r["day"], "price": r["best"]} for r in rows if r["material"] == key]
         if not series:
             continue
-        offers = sorted(({"partner_id": pid, "name": partners[pid]["name"], "kind": partners[pid]["kind"], "price": p[key]}
-                         for pid, p in latest.items() if key in p), key=lambda o: -o["price"])
-        out.append({"key": key, "label": m["label"], "member_price": m["price"], "accepted": m["accepted"], "series": series, "offers": offers})
-    return {"sample": True, "materials": out}
+        offers = sorted(({"partner_id": o["partner_id"], "name": partners[o["partner_id"]]["name"], "kind": partners[o["partner_id"]]["kind"],
+                          "price": o["price"], "day": o["day"], "entered_at": o["entered_at"]}
+                         for o in latest if o["material"] == key), key=lambda o: -o["price"])
+        refs = [{"source": src, "item": item, "low": low, "high": high} for src, item, low, high in PRICE_REFS.get(key, [])]
+        out.append({"key": key, "label": m["label"], "member_price": m["price"], "accepted": m["accepted"], "series": series,
+                    "offers": offers, "refs": refs})
+    return {"sample": True, "materials": out, "sources": PRICE_SOURCES}
 
 
 @app.post("/api/partner/prices")
@@ -688,9 +715,9 @@ def set_price(body: PriceIn, u: dict = Depends(auth.need("partner"))):
         raise HTTPException(400, "คู่ค้ารายนี้ไม่ได้รับวัสดุชนิดนี้")
     if not 0 < body.price <= 1000:
         raise HTTPException(400, "ราคาต้องมากกว่า 0 และไม่เกิน 1,000 บาทต่อกิโลกรัม")
-    db.execute("INSERT INTO prices(partner_id, material, day, price) VALUES(?,?,?,?)"
-               " ON CONFLICT(partner_id, material, day) DO UPDATE SET price = excluded.price",
-               (partner["id"], body.material, today(), round(body.price, 2)))
+    db.execute("INSERT INTO prices(partner_id, material, day, price, entered_at) VALUES(?,?,?,?,?)"
+               " ON CONFLICT(partner_id, material, day) DO UPDATE SET price = excluded.price, entered_at = excluded.entered_at",
+               (partner["id"], body.material, today(), round(body.price, 2), time.time()))
     return {"ok": True}
 
 
@@ -710,6 +737,7 @@ def carbon_report(member_id: int | None = None) -> dict:
     """ประมาณการก๊าซเรือนกระจกที่หลีกเลี่ยงได้ จากน้ำหนักจริงของถุงที่รับแล้ว แยกตามสมาชิก วัสดุ และเดือน"""
     mats = settings.materials()
     price = settings.get()["carbon_price_thb"]
+    fac = carbon.current()
     where = "WHERE r.status IN ('collected', 'delivered')" + (" AND r.member_id = ?" if member_id else "")
     members: dict[int, dict] = {}
     monthly: dict[str, dict] = {}
@@ -729,7 +757,7 @@ def carbon_report(member_id: int | None = None) -> dict:
                     bucket["by_material"][part["material"]] = bucket["by_material"].get(part["material"], 0) + kg
 
     def finish(bucket: dict) -> dict:
-        co2 = carbon.avoided_kg(bucket["by_material"])
+        co2 = carbon.avoided_kg(bucket["by_material"], fac["factors"])
         bucket.update(kg=round(bucket["kg"], 1), co2e_kg=round(co2, 1), value_thb=round(co2 / 1000 * price, 2),
                       by_material={k: round(v, 1) for k, v in sorted(bucket["by_material"].items(), key=lambda kv: -kv[1])})
         return bucket
@@ -741,7 +769,8 @@ def carbon_report(member_id: int | None = None) -> dict:
         for k, v in m["by_material"].items():
             total["by_material"][k] = total["by_material"].get(k, 0) + v
     return {
-        "factors": {k: {"label": mats[k]["label"], "kg_co2e_per_kg": v} for k, v in carbon.KG_CO2E_PER_KG.items()},
+        "factors": {k: {"label": mats[k]["label"], "kg_co2e_per_kg": v} for k, v in fac["factors"].items()},
+        "factor_source": {k: fac[k] for k in ("source", "version", "reference_url", "effective_date", "note", "updated_at", "updated_by", "is_default")},
         "carbon_price_thb": price, "members": rows, "total": finish(total),
         "monthly": [finish(monthly[k]) for k in sorted(monthly)],
     }
@@ -764,6 +793,99 @@ def carbon_csv(_: dict = Depends(auth.need("admin"))):
                     "; ".join(f'{rep["factors"][k]["label"]} {v}' for k, v in m["by_material"].items() if k in rep["factors"])])
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="carbon-estimate.csv"'})
+
+
+# ---------- โทเคนของระบบ และ API สำหรับระบบภายนอก (v1) ----------
+
+def list_tokens() -> list[dict]:
+    rows = db.query("SELECT t.id, t.name, t.prefix, t.scopes, t.member_id, t.created_at, t.last_used_at, t.revoked_at, m.name AS member_name"
+                    " FROM api_tokens t LEFT JOIN members m ON m.id = t.member_id ORDER BY t.id DESC")
+    for r in rows:
+        r["scopes"] = json.loads(r["scopes"])
+    return rows
+
+
+def weekly_collected(weeks: int = 9) -> list[dict]:
+    """น้ำหนักจริงที่รับได้ในแต่ละสัปดาห์ (เริ่มวันจันทร์) ย้อนหลัง ใช้กับกราฟของแดชบอร์ด"""
+    this_monday = datetime.now(BKK).date() - timedelta(days=datetime.now(BKK).weekday())
+    out = {(this_monday - timedelta(weeks=w)).isoformat(): {"kg": 0.0, "pickups": 0} for w in range(weeks - 1, -1, -1)}
+    for r in db.query("SELECT collected_at, actual_kg FROM requests WHERE collected_at IS NOT NULL"):
+        d = datetime.fromtimestamp(r["collected_at"], BKK).date()
+        key = (d - timedelta(days=d.weekday())).isoformat()
+        if key in out:
+            out[key]["kg"] += r["actual_kg"] or 0
+            out[key]["pickups"] += 1
+    return [{"week": k, "kg": round(v["kg"], 1), "pickups": v["pickups"]} for k, v in out.items()]
+
+
+@app.post("/api/admin/tokens")
+def create_token(body: TokenIn, _: dict = Depends(auth.need("admin"))):
+    """สร้างโทเคนของระบบ ตัวโทเคนเต็มถูกส่งกลับครั้งเดียว ระบบเก็บเฉพาะค่า hash"""
+    name = body.name.strip()[:60]
+    scopes = [s for s in dict.fromkeys(body.scopes) if s in auth.TOKEN_SCOPES]
+    if not name or not scopes:
+        raise HTTPException(400, "ต้องตั้งชื่อ และเลือกสิทธิ์อย่างน้อย 1 อย่าง")
+    if body.member_id is not None and not db.query("SELECT 1 FROM members WHERE id = ?", (body.member_id,)):
+        raise HTTPException(404, "ไม่พบสมาชิกที่จะผูกกับโทเคน")
+    if body.member_id is not None and "carbon:write" in scopes:
+        raise HTTPException(400, "โทเคนที่ผูกกับสมาชิกรายเดียวใช้ได้เฉพาะสิทธิ์อ่าน")
+    return auth.create_token(name, scopes, body.member_id)
+
+
+@app.post("/api/admin/tokens/{tid}/revoke")
+def revoke_token(tid: int, _: dict = Depends(auth.need("admin"))):
+    if not db.query("SELECT 1 FROM api_tokens WHERE id = ?", (tid,)):
+        raise HTTPException(404, "ไม่พบโทเคน")
+    db.execute("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?", (time.time(), tid))
+    return {"ok": True}
+
+
+def _public_report(rep: dict) -> dict:
+    """รูปแบบข้อมูลคาร์บอนที่ส่งให้ระบบภายนอก"""
+    return {
+        "generated_at": datetime.now(BKK).isoformat(timespec="seconds"),
+        "unit": {"weight": "kg", "avoided_emissions": "kgCO2e"},
+        "disclaimer": "ประมาณการจากน้ำหนักจริงที่รับ ยังไม่ใช่คาร์บอนเครดิตที่ผ่านการทวนสอบ",
+        "factor_source": rep["factor_source"], "factors": {k: v["kg_co2e_per_kg"] for k, v in rep["factors"].items()},
+        "total": {k: rep["total"][k] for k in ("kg", "co2e_kg", "by_material")},
+        "monthly": [{k: m[k] for k in ("month", "kg", "co2e_kg", "by_material")} for m in rep["monthly"]],
+        "members": [{k: m[k] for k in ("member_id", "name", "kind", "pickups", "kg", "co2e_kg", "by_material")} for m in rep["members"]],
+    }
+
+
+@app.get("/api/v1/carbon/summary")
+def v1_carbon_summary(client: dict = Depends(auth.api_client("carbon:read"))):
+    """ให้ระบบภายนอกดึงข้อมูลคาร์บอน โทเคนที่ผูกกับสมาชิกรายเดียวจะได้เฉพาะข้อมูลของสมาชิกรายนั้น"""
+    return _public_report(carbon_report(client["member_id"]))
+
+
+@app.get("/api/v1/carbon/members/{member_id}")
+def v1_carbon_member(member_id: int, client: dict = Depends(auth.api_client("carbon:read"))):
+    if client["member_id"] is not None and client["member_id"] != member_id:
+        raise HTTPException(403, "โทเคนนี้เห็นได้เฉพาะสมาชิกที่ผูกไว้")
+    if not db.query("SELECT 1 FROM members WHERE id = ?", (member_id,)):
+        raise HTTPException(404, "ไม่พบสมาชิก")
+    return _public_report(carbon_report(member_id))
+
+
+@app.get("/api/v1/carbon/factors")
+def v1_carbon_factors(_: dict = Depends(auth.api_client("carbon:read"))):
+    return carbon.current()
+
+
+@app.put("/api/v1/carbon/factors")
+def v1_set_carbon_factors(body: FactorsIn, client: dict = Depends(auth.api_client("carbon:write"))):
+    """รับชุดค่าปัจจัยการปล่อยจากภายนอก เช่น ค่าที่ อบก. ประกาศ แล้วใช้กับการคำนวณทั้งระบบทันที"""
+    try:
+        return carbon.update(body.model_dump(), client["name"])
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/v1/carbon/factors")
+def v1_reset_carbon_factors(_: dict = Depends(auth.api_client("carbon:write"))):
+    """กลับไปใช้ค่าตั้งต้น"""
+    return carbon.reset()
 
 
 @app.get("/api/health")

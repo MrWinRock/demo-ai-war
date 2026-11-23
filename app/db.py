@@ -6,7 +6,7 @@ import threading
 DB_PATH = os.environ.get("DB_PATH", "/data/app.db")
 
 # เพิ่มเลขนี้เมื่อแก้ SCHEMA หรือข้อมูลตัวอย่าง ระบบจะล้างฐานข้อมูลเดิมแล้วสร้างใหม่ตอนเริ่มทำงาน
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -34,7 +34,16 @@ CREATE TABLE IF NOT EXISTS partners (
 );
 CREATE TABLE IF NOT EXISTS prices (
     partner_id INTEGER NOT NULL, material TEXT NOT NULL, day TEXT NOT NULL, price REAL NOT NULL,
+    entered_at REAL,                     -- เวลาที่คู่ค้าบันทึกราคานี้เอง (ว่าง = ข้อมูลจำลองจาก seed)
     PRIMARY KEY (partner_id, material, day)
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,     -- เก็บเฉพาะ SHA-256 ของโทเคน ตัวโทเคนแสดงครั้งเดียวตอนสร้าง
+    prefix TEXT NOT NULL,                -- อักษรต้นของโทเคน ใช้ให้ผู้ดูแลแยกแยะ
+    scopes TEXT NOT NULL,                -- JSON: carbon:read, carbon:write
+    member_id INTEGER,                   -- ถ้าระบุ โทเคนนี้เห็นข้อมูลของสมาชิกรายนี้เท่านั้น
+    created_at REAL NOT NULL, last_used_at REAL, revoked_at REAL
 );
 CREATE TABLE IF NOT EXISTS notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER NOT NULL, text TEXT NOT NULL,
@@ -107,6 +116,6 @@ def reset() -> None:
     with _lock:
         _c().executescript("DROP TABLE IF EXISTS members; DROP TABLE IF EXISTS vehicles; DROP TABLE IF EXISTS requests; DROP TABLE IF EXISTS kv;"
                          " DROP TABLE IF EXISTS users; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS partners;"
-                         " DROP TABLE IF EXISTS prices; DROP TABLE IF EXISTS notices;")
+                         " DROP TABLE IF EXISTS prices; DROP TABLE IF EXISTS notices; DROP TABLE IF EXISTS api_tokens;")
         _c().executescript(SCHEMA)
         _c().commit()

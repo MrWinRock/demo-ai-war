@@ -9,7 +9,9 @@ import os
 import secrets
 import time
 
-from fastapi import Cookie, Depends, HTTPException
+import json
+
+from fastapi import Cookie, Depends, Header, HTTPException
 
 from . import db
 
@@ -59,4 +61,43 @@ def need(*roles: str):
         if user["role"] not in roles:
             raise HTTPException(403, "บทบาทของคุณไม่มีสิทธิ์ทำรายการนี้")
         return user
+    return dep
+
+
+# ---------- โทเคนของระบบ: ให้ระบบภายนอกเรียก API ได้โดยไม่ต้องเข้าสู่ระบบ ----------
+TOKEN_SCOPES = ("carbon:read", "carbon:write")
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_token(name: str, scopes: list[str], member_id: int | None) -> dict:
+    """สร้างโทเคนใหม่ คืนตัวโทเคนเต็มครั้งเดียว ฐานข้อมูลเก็บเฉพาะค่า hash"""
+    token = "yt_" + secrets.token_urlsafe(30)
+    tid = db.execute(
+        "INSERT INTO api_tokens(name, token_hash, prefix, scopes, member_id, created_at) VALUES(?,?,?,?,?,?)",
+        (name, _hash_token(token), token[:9], json.dumps(scopes), member_id, time.time()),
+    )
+    return {"id": tid, "token": token, "prefix": token[:9], "name": name, "scopes": scopes, "member_id": member_id}
+
+
+def api_client(scope: str):
+    """ใช้กับ Depends: ผ่านได้ด้วยโทเคนของระบบที่มีสิทธิ์ตาม scope (Authorization: Bearer ...) หรือ session ของผู้ดูแล
+
+    คืน {"name", "member_id"} โดย member_id ไม่ว่างเมื่อโทเคนถูกจำกัดให้เห็นสมาชิกรายเดียว
+    """
+    def dep(authorization: str | None = Header(None), yt_session: str | None = Cookie(None)) -> dict:
+        if authorization and authorization.lower().startswith("bearer "):
+            rows = db.query("SELECT * FROM api_tokens WHERE token_hash = ?", (_hash_token(authorization[7:].strip()),))
+            if not rows or rows[0]["revoked_at"]:
+                raise HTTPException(401, "โทเคนไม่ถูกต้องหรือถูกยกเลิกแล้ว")
+            if scope not in json.loads(rows[0]["scopes"]):
+                raise HTTPException(403, f"โทเคนนี้ไม่มีสิทธิ์ {scope}")
+            db.execute("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (time.time(), rows[0]["id"]))
+            return {"name": f"token:{rows[0]['name']}", "member_id": rows[0]["member_id"]}
+        user = current(yt_session)
+        if user["role"] != "admin":
+            raise HTTPException(403, "ต้องใช้โทเคนของระบบ หรือเข้าสู่ระบบเป็นผู้ดูแล")
+        return {"name": f"admin:{user['username']}", "member_id": None}
     return dep
