@@ -4,7 +4,7 @@ import random
 import time
 
 from . import db
-from .config import SLOTS, VEHICLE_COLORS
+from .config import SIZES, SLOTS, VEHICLE_COLORS
 from .estimate import estimate
 
 NAMES = [
@@ -13,12 +13,12 @@ NAMES = [
     "คุณณัฐ", "คุณศิริพร", "คุณพงศ์", "คุณกมล", "คุณอารีย์", "คุณบุญส่ง", "คุณลัดดา", "คุณเอกชัย",
 ]
 
-# ชุดวัสดุตัวอย่าง: (ชื่อ, ชนิดวัสดุ, จำนวนโดยประมาณ)
+# ชุดวัสดุตัวอย่างสำหรับกองขนาดเล็ก: (ชื่อ, ชนิดวัสดุ, จำนวนชิ้น) กองใหญ่ขึ้นจะคูณจำนวนตามขนาด
 BUNDLES = [
     [("ขวดน้ำดื่ม", "pet", 15), ("กระป๋องน้ำอัดลม", "aluminum", 8)],
     [("ลังกระดาษ", "cardboard", 6)],
     [("ขวดแก้ว", "glass", 10), ("กระป๋องอาหาร", "steel", 5)],
-    [("กระดาษสำนักงาน", "paper", 40), ("ลังกระดาษ", "cardboard", 3)],
+    [("นิตยสารเก่า", "paper", 8), ("ลังกระดาษ", "cardboard", 3)],
     [("ขวดนม", "hdpe", 9), ("ขวดน้ำดื่ม", "pet", 20)],
     [("กระป๋องเบียร์", "aluminum", 24)],
     [("ขวดน้ำดื่ม", "pet", 30), ("ลังกระดาษ", "cardboard", 4), ("ขวดแก้ว", "glass", 6)],
@@ -38,9 +38,9 @@ def run() -> None:
             (i, name, f"ซอยตัวอย่าง {i}", round(lat, 6), round(lng, 6), rnd.choice([0, 40, 120, 250])),
         )
 
-    for i, (name, cap) in enumerate([("รถกระบะ 1", 120), ("รถกระบะ 2", 120)], start=1):
+    for i, (name, cap) in enumerate([("รถกระบะ 1", 30), ("รถกระบะ 2", 30)], start=1):
         db.execute(
-            "INSERT INTO vehicles(id, name, capacity_kg, color, active) VALUES(?,?,?,?,1)",
+            "INSERT INTO vehicles(id, name, capacity_units, color, active) VALUES(?,?,?,?,1)",
             (i, name, cap, VEHICLE_COLORS[(i - 1) % len(VEHICLE_COLORS)]),
         )
 
@@ -49,11 +49,12 @@ def run() -> None:
     for n, m in enumerate(members):
         slot = rnd.choice(SLOTS)
         size = rnd.choices(["S", "M", "L"], weights=[4, 4, 1])[0]
-        items = [{"name_th": a, "material": b, "count": c, "prep_tip_th": ""} for a, b, c in rnd.choice(BUNDLES)]
-        est = estimate(items, size)
+        units = SIZES[size]["units"]
+        items = [{"name_th": a, "material": b, "count": c * units, "prep_tip_th": ""} for a, b, c in rnd.choice(BUNDLES)]
+        est = estimate(items)
         db.execute(
-            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, est_kg, est_value, created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume, est_kg, est_value, created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (m["id"], m["lat"], m["lng"], slot["id"], slot["start"], slot["end"], json.dumps(items, ensure_ascii=False),
-             json.dumps(est["materials"]), size, est["est_kg"], est["est_value"], now + n),
+             json.dumps(est["materials"]), size, units, est["est_kg"], est["est_value"], now + n),
         )

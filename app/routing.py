@@ -1,5 +1,7 @@
 """จัดเส้นทางรถเก็บขยะรีไซเคิล: VRP แบบมีเวลานัดและความจุรถ ด้วย OR-Tools
 
+ความจุรถคิดจากพื้นที่ (volume ของคำขอ เทียบ capacity_units ของรถ) เพราะของรีไซเคิลเบาแต่กินที่
+
 ข้อจำกัดของเดโม: ระยะทางใช้เส้นตรงคูณค่าคงที่ (ไม่ใช่ระยะถนนจริง) และความเร็วเฉลี่ยคงที่
 """
 import math
@@ -42,8 +44,8 @@ def baseline_km(depot: dict, n_vehicles: int, requests: list[dict]) -> float:
 
 
 def solve(depot: dict, vehicles: list[dict], requests: list[dict], time_limit_s: int = 2) -> dict:
-    """คืน {"routes": [{vehicle_id, km, load_kg, stops: [{request_id, eta}]}], "unassigned": [request_id]}"""
-    empty = [{"vehicle_id": v["id"], "km": 0.0, "load_kg": 0.0, "stops": [], "back_at": None} for v in vehicles]
+    """คืน {"routes": [{vehicle_id, km, load_units, load_kg, stops: [{request_id, eta}]}], "unassigned": [request_id]}"""
+    empty = [{"vehicle_id": v["id"], "km": 0.0, "load_units": 0, "load_kg": 0.0, "stops": [], "back_at": None} for v in vehicles]
     if not vehicles or not requests:
         return {"routes": empty, "unassigned": [r["id"] for r in requests]}
 
@@ -75,10 +77,10 @@ def solve(depot: dict, vehicles: list[dict], requests: list[dict], time_limit_s:
 
     def demand(i: int) -> int:
         node = manager.IndexToNode(i)
-        return 0 if node == 0 else int(math.ceil(requests[node - 1]["est_kg"]))
+        return 0 if node == 0 else int(requests[node - 1]["volume"])
 
     demand_cb = model.RegisterUnaryTransitCallback(demand)
-    model.AddDimensionWithVehicleCapacity(demand_cb, 0, [int(v["capacity_kg"]) for v in vehicles], True, "Load")
+    model.AddDimensionWithVehicleCapacity(demand_cb, 0, [int(v["capacity_units"]) for v in vehicles], True, "Load")
 
     for node in range(1, n):
         model.AddDisjunction([manager.NodeToIndex(node)], DROP_PENALTY)
@@ -93,20 +95,21 @@ def solve(depot: dict, vehicles: list[dict], requests: list[dict], time_limit_s:
 
     routes, served = [], set()
     for v, veh in enumerate(vehicles):
-        idx, stops, route_km, load, prev = model.Start(v), [], 0.0, 0.0, 0
+        idx, stops, route_km, load, units, prev = model.Start(v), [], 0.0, 0.0, 0, 0
         while not model.IsEnd(idx):
             node = manager.IndexToNode(idx)
             if node > 0:
                 r = requests[node - 1]
                 served.add(r["id"])
                 load += r["est_kg"]
+                units += int(r["volume"])
                 stops.append({"request_id": r["id"], "eta": sol.Min(time_dim.CumulVar(idx))})
             route_km += km[prev][node]
             prev = node
             idx = sol.Value(model.NextVar(idx))
         route_km += km[prev][0]
         routes.append({
-            "vehicle_id": veh["id"], "km": round(route_km, 1) if stops else 0.0, "load_kg": round(load, 1),
+            "vehicle_id": veh["id"], "km": round(route_km, 1) if stops else 0.0, "load_units": units, "load_kg": round(load, 1),
             "stops": stops, "back_at": sol.Min(time_dim.CumulVar(idx)) if stops else None,
         })
     return {"routes": routes, "unassigned": [r["id"] for r in requests if r["id"] not in served]}

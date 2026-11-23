@@ -5,6 +5,9 @@ import threading
 
 DB_PATH = os.environ.get("DB_PATH", "/data/app.db")
 
+# เพิ่มเลขนี้เมื่อแก้ SCHEMA หรือข้อมูลตัวอย่าง ระบบจะล้างฐานข้อมูลเดิมแล้วสร้างใหม่ตอนเริ่มทำงาน
+SCHEMA_VERSION = "2"
+
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
@@ -14,7 +17,7 @@ CREATE TABLE IF NOT EXISTS members (
     lat REAL NOT NULL, lng REAL NOT NULL, points INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS vehicles (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, capacity_kg INTEGER NOT NULL,
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, capacity_units INTEGER NOT NULL,  -- พื้นที่บรรทุก เทียบเป็นถุงหิ้ว
     color TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS requests (
@@ -23,7 +26,8 @@ CREATE TABLE IF NOT EXISTS requests (
     slot TEXT NOT NULL, window_start INTEGER NOT NULL, window_end INTEGER NOT NULL,
     items TEXT NOT NULL,       -- JSON: รายการที่ AI เห็นในรูป
     materials TEXT NOT NULL,   -- JSON: [{material, share}]
-    size TEXT NOT NULL, est_kg REAL NOT NULL, est_value REAL NOT NULL,
+    size TEXT NOT NULL, volume INTEGER NOT NULL,  -- พื้นที่บนรถที่ใช้ ตามขนาดกอง
+    est_kg REAL NOT NULL, est_value REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',  -- pending | collected
     photo TEXT NOT NULL DEFAULT '',  -- รูปย่อ (data URL) เก็บเป็นหลักฐาน
     actual_kg REAL, note TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL

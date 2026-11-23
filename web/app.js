@@ -121,15 +121,16 @@ function setPin(lat, lng, recenter = true) {
 }
 
 function estimateLocal() {
-  const counts = {};
-  for (const i of draft.items) {
+  // สูตรเดียวกับ app/estimate.py: น้ำหนัก = จำนวนชิ้น x น้ำหนักเฉลี่ยต่อชิ้นของวัสดุ
+  let total = 0, kg = 0, value = 0;
+  for (const i of draft?.items || []) {
     const c = Math.max(0, parseInt(i.count, 10) || 0);
-    if (i.material !== 'non_recyclable' && c > 0) counts[i.material] = (counts[i.material] || 0) + c;
+    const m = material(i.material);
+    if (!m.unit_kg || c === 0) continue;
+    total += c;
+    kg += c * m.unit_kg;
+    value += c * m.unit_kg * m.price;
   }
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
-  const kg = total ? S.config.sizes[draft.size].kg : 0;
-  let value = 0;
-  for (const k in counts) value += (counts[k] / total) * kg * material(k).price;
   return { total, kg, value };
 }
 
@@ -154,6 +155,7 @@ function renderDraft(state) {
     ${draft.warning ? `<div class="notice">${esc(draft.warning)}</div>` : ''}
     <p>${esc(draft.summary_th)} ${conf ? `<span class="tag gray">${conf}</span>` : ''}</p>
     ${draft.items.length ? `<ul class="items">${rows}</ul><p class="muted">แก้จำนวนได้ถ้า AI นับไม่ตรง</p>` : ''}
+    <p class="muted">ขนาดกอง ใช้จองพื้นที่บนรถ</p>
     <div class="chips">${Object.entries(S.config.sizes).map(([k, v]) => `<button type="button" class="chip ${k === draft.size ? 'active' : ''}" data-size="${k}">${esc(v.label)}</button>`).join('')}</div>
     <div id="draft-totals" class="totals"></div>`;
   renderTotals();
@@ -163,8 +165,8 @@ function renderTotals() {
   const e = estimateLocal();
   $('#draft-totals').innerHTML = `
     <div class="stat"><b>${num(e.total)}</b><span>ชิ้นที่รับได้</span></div>
-    <div class="stat"><b>${num(e.kg)} กก.</b><span>น้ำหนักประมาณ</span></div>
-    <div class="stat"><b>${num(e.value)} บาท</b><span>มูลค่าประมาณ</span></div>`;
+    <div class="stat"><b>${num(e.kg, 1)} กก.</b><span>น้ำหนักประมาณ</span></div>
+    <div class="stat"><b>${num(e.value, 1)} บาท</b><span>มูลค่าประมาณ</span></div>`;
   updateSubmit();
 }
 
@@ -272,7 +274,7 @@ function renderDispatch() {
     const where = done ? `รับแล้ว ${num(r.actual_kg, 1)} กก.` : st ? `${esc(st.name)} · ถึงประมาณ ${hhmm(st.eta)}` : 'ยังจัดรถไม่ลง';
     L.marker([r.lat, r.lng], { icon }).addTo(dLayer).bindPopup(
       `<strong>#${r.id} ${esc(r.member_name)}</strong><br>${where}<br>นัด ${esc(slotLabel(r.slot))}<br>
-       ${itemsText(r.items)}<br>รวม ${num(r.total_count)} ชิ้น · ประมาณ ${num(r.est_kg)} กก.<br>พิกัด ${coordLink(r.lat, r.lng)}`);
+       ${itemsText(r.items)}<br>รวม ${num(r.total_count)} ชิ้น · ประมาณ ${num(r.est_kg, 1)} กก.<br>พิกัด ${coordLink(r.lat, r.lng)}`);
     bounds.push([r.lat, r.lng]);
   }
   L.marker([depot.lat, depot.lng], { icon: pinIcon('ศ', '#0f172a', 'depot') }).addTo(dLayer).bindPopup(esc(depot.name));
@@ -294,7 +296,7 @@ function renderDispatch() {
   $('#vehicle-list').innerHTML = S.vehicles.map((v) => {
     const r = routeOf[v.id];
     const info = !v.active ? '<span class="tag warn">หยุดใช้งาน</span>'
-      : r && r.stops.length ? `${r.stops.length} จุด · ${num(r.km, 1)} กม. · บรรทุก ${num(r.load_kg)}/${num(v.capacity_kg)} กก. · กลับถึงศูนย์ ${hhmm(r.back_at)}`
+      : r && r.stops.length ? `${r.stops.length} จุด · ${num(r.km, 1)} กม. · ใช้พื้นที่ ${num(r.load_units)}/${num(v.capacity_units)} ถุง · ประมาณ ${num(r.load_kg, 1)} กก. · กลับถึงศูนย์ ${hhmm(r.back_at)}`
       : 'ไม่มีงาน';
     return `<div class="list-item"><span class="dot" style="background:${esc(v.color)}"></span><strong>${esc(v.name)}</strong><br><span class="muted">${info}</span></div>`;
   }).join('');
@@ -342,7 +344,7 @@ function renderDriver() {
         <span class="muted">${esc(r.address)} · นัด ${esc(slotLabel(r.slot))}</span><br>
         พิกัด ${coordLink(r.lat, r.lng)} <a href="${mapsUrl(r.lat, r.lng)}" target="_blank" rel="noopener">นำทาง</a><br>
         ${itemsText(r.items)}<br>
-        รวม <strong>${num(r.total_count)} ชิ้น</strong> · ประมาณ ${num(r.est_kg)} กก.
+        รวม <strong>${num(r.total_count)} ชิ้น</strong> · ประมาณ ${num(r.est_kg, 1)} กก.
         ${done ? `<div class="notice ok">รับแล้ว ${num(r.actual_kg, 1)} กก.</div>`
           : `<div class="collect"><input type="number" min="0.1" step="0.1" inputmode="decimal" value="${r.est_kg}" id="kg-${r.id}" aria-label="น้ำหนักจริง (กก.)"><span>กก.</span>
              <button type="button" class="btn primary small" data-collect="${r.id}">รับแล้ว</button></div>`}
@@ -366,7 +368,7 @@ function renderRecords() {
     const st = idx[r.id];
     return `<tr><td>#${r.id}</td><td>${timeText(r.created_at)}</td><td>${esc(r.member_name)}</td><td>${coordLink(r.lat, r.lng)}</td>
       <td>${esc(slotLabel(r.slot))}</td><td>${itemsText(r.items)}</td><td class="num">${num(r.total_count)}</td>
-      <td class="num">${num(r.est_kg)}</td><td class="num">${r.actual_kg ? num(r.actual_kg, 1) : '–'}</td>
+      <td class="num">${num(r.est_kg, 1)}</td><td class="num">${r.actual_kg ? num(r.actual_kg, 1) : '–'}</td>
       <td>${r.status === 'collected' ? '<span class="tag gray">รับแล้ว</span>' : st ? `<span class="tag">${esc(st.name)}</span>` : '<span class="tag warn">รอจัดรถ</span>'}</td></tr>`;
   }).join('')}</tbody>`;
 }

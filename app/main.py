@@ -25,9 +25,9 @@ BKK = timezone(timedelta(hours=7))
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
-    if not db.query("SELECT 1 FROM members LIMIT 1"):
-        seed.run()
-        compute_plan()
+    # ฐานข้อมูลว่าง หรือสร้างจากโครงสร้างรุ่นเก่า: ล้างแล้วใส่ข้อมูลตัวอย่างใหม่
+    if db.get_kv("schema_version") != db.SCHEMA_VERSION:
+        reseed()
     yield
 
 
@@ -36,10 +36,17 @@ app = FastAPI(title="แยกถูก รับถึงบ้าน", lifespa
 
 # ---------- ตัวช่วย ----------
 
+def reseed() -> None:
+    db.reset()
+    seed.run()
+    db.set_kv("schema_version", db.SCHEMA_VERSION)
+    compute_plan()
+
+
 def load_requests(where: str = "", params: tuple = ()) -> list[dict]:
     rows = db.query(
         "SELECT r.id, r.member_id, r.lat, r.lng, r.slot, r.window_start, r.window_end, r.items, r.materials, r.size,"
-        " r.est_kg, r.est_value, r.status, r.actual_kg, r.note, r.created_at, (r.photo != '') AS has_photo,"
+        " r.volume, r.est_kg, r.est_value, r.status, r.actual_kg, r.note, r.created_at, (r.photo != '') AS has_photo,"
         f" m.name AS member_name, m.address FROM requests r JOIN members m ON m.id = r.member_id {where} ORDER BY r.id",
         params,
     )
@@ -78,7 +85,7 @@ def compute_plan() -> dict:
 
     for route in result["routes"]:
         v = veh_by_id[route["vehicle_id"]]
-        route.update(name=v["name"], color=v["color"], capacity_kg=v["capacity_kg"])
+        route.update(name=v["name"], color=v["color"], capacity_units=v["capacity_units"])
 
     n_stops = len(served)
     summary = f"ใช้รถ {sum(1 for r in result['routes'] if r['stops'])} คัน รับ {n_stops} จุด ระยะทางรวม {total_km} กม."
@@ -161,7 +168,7 @@ def classify(body: ClassifyIn):
     except Exception:
         raise HTTPException(400, "ข้อมูลรูปไม่ถูกต้อง")
     result = ai.classify(body.image_b64, body.media_type)
-    result["estimate"] = estimate(result["items"], result["size"])
+    result["estimate"] = estimate(result["items"])
     return result
 
 
@@ -175,15 +182,16 @@ def create_request(body: RequestIn):
         raise HTTPException(400, "พิกัดไม่ถูกต้อง")
     photo = body.photo if body.photo.startswith("data:image/jpeg;base64,") and len(body.photo) < 300_000 else ""
     items = [i.model_dump() for i in body.items if i.material in MATERIALS]
-    est = estimate(items, body.size)
+    est = estimate(items)
     if est["est_kg"] <= 0:
         raise HTTPException(400, "ไม่มีรายการที่รับได้ในคำขอนี้")
     slot = SLOT_BY_ID[body.slot]
     rid = db.execute(
-        "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, est_kg,"
-        " est_value, photo, note, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume,"
+        " est_kg, est_value, photo, note, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (body.member_id, round(body.lat, 6), round(body.lng, 6), slot["id"], slot["start"], slot["end"],
-         json.dumps(items, ensure_ascii=False), json.dumps(est["materials"]), body.size, est["est_kg"],
+         json.dumps(items, ensure_ascii=False), json.dumps(est["materials"]), body.size, SIZES[body.size]["units"],
+         est["est_kg"],
          est["est_value"], photo, body.note[:200], time.time()),
     )
     plan = compute_plan()  # มีงานใหม่เข้ามา จัดเส้นทางใหม่ทันที
@@ -247,9 +255,7 @@ def command(body: CommandIn):
 
 @app.post("/api/reset")
 def reset():
-    db.reset()
-    seed.run()
-    compute_plan()
+    reseed()
     return {"ok": True}
 
 
@@ -258,12 +264,12 @@ def records_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["เลขที่", "เวลาแจ้ง", "สมาชิก", "ละติจูด", "ลองจิจูด", "ช่วงเวลานัด", "รายการ (ชิ้น)", "จำนวนรวม (ชิ้น)",
-                "ขนาดกอง", "น้ำหนักประมาณ (กก.)", "มูลค่าประมาณ (บาท)", "สถานะ", "น้ำหนักจริง (กก.)"])
+                "ขนาดกอง", "พื้นที่บนรถ (ถุง)", "น้ำหนักประมาณ (กก.)", "มูลค่าประมาณ (บาท)", "สถานะ", "น้ำหนักจริง (กก.)"])
     for r in load_requests():
         items = "; ".join(f'{i["name_th"]} x{i.get("count", 0)}' for i in r["items"])
         when = datetime.fromtimestamp(r["created_at"], BKK).strftime("%Y-%m-%d %H:%M")
         w.writerow([r["id"], when, r["member_name"], r["lat"], r["lng"], SLOT_BY_ID[r["slot"]]["label"], items,
-                    r["total_count"], r["size"], r["est_kg"], r["est_value"],
+                    r["total_count"], r["size"], r["volume"], r["est_kg"], r["est_value"],
                     "รับแล้ว" if r["status"] == "collected" else "รอรับ", r["actual_kg"] or ""])
     # ใส่ BOM ให้ Excel อ่านภาษาไทยได้ถูกต้อง
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
