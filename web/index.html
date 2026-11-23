@@ -91,15 +91,17 @@
       </div>
     </section>
 
-    <!-- คนขับ -->
+    <!-- คนขับรถรับของ -->
     <section id="view-driver" class="view narrow" hidden>
       <div class="card">
         <label class="field">รถ
           <select id="driver-vehicle"></select>
         </label>
         <p id="driver-summary" class="muted"></p>
+        <div class="progress" aria-hidden="true"><span id="driver-progress"></span></div>
       </div>
       <div id="driver-stops"></div>
+      <div id="driver-end"></div>
     </section>
 
     <!-- บันทึก -->
@@ -127,6 +129,8 @@
   <div id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- ตัวอ่าน QR สำรอง สำหรับเบราว์เซอร์ที่ไม่มี BarcodeDetector -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

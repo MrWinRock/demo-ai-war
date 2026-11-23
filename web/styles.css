@@ -127,3 +127,21 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
   max-width: 90vw; text-align: center;
 }
 #toast.show { opacity: 1; }
+
+/* ---------- QR ของสมาชิก และขั้นตอนรับของของคนขับ ---------- */
+.tag.here { background: #dbeafe; color: #1d4ed8; }
+.pin.here { outline: 3px solid #22c55e; }
+.progress { height: 8px; background: var(--bg); border-radius: 999px; overflow: hidden; margin-top: .5rem; }
+.progress span { display: block; height: 100%; width: 0; background: var(--green); transition: width .3s; }
+.card.next { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-soft); }
+.actions { margin-top: .6rem; }
+.scanner { margin-top: .7rem; padding: .7rem; border: 1px dashed var(--green); border-radius: 10px; display: grid; gap: .5rem; }
+.scanner p { margin: 0; }
+.scanner video { width: 100%; max-height: 260px; border-radius: 8px; background: #000; object-fit: cover; }
+.ticket { margin-top: .5rem; }
+.ticket summary { cursor: pointer; color: var(--green-dark); font-weight: 600; }
+.qr-box { text-align: center; padding: .6rem 0 0; }
+.qr-box p { margin: .3rem 0; }
+.qr svg { width: 180px; height: 180px; max-width: 100%; border-radius: 8px; }
+.code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 1.3rem; letter-spacing: .15em; }
+.collect label { font-size: .9rem; color: var(--muted); }

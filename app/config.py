@@ -45,3 +45,7 @@ FACTORIES = [
 VEHICLE_COLORS = ["#2563eb", "#ea580c", "#7c3aed", "#0891b2"]
 
 POINTS_PER_KG = 10
+
+# ตัวอักษรของรหัสรับของ ตัดตัวที่อ่านสับสนออก (0/O, 1/I)
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+QR_PREFIX = "YAEKTOOK"

@@ -44,6 +44,34 @@ let dFitted = '';      // ขนาดแผนที่ตอนจัดมุ
 const material = (key) => S.config.materials[key] || { label: key, price: 0 };
 const itemsText = (items) => items.filter((i) => i.material !== 'non_recyclable').map((i) => `${esc(i.name_th)} ${num(i.count)} ชิ้น`).join(', ');
 
+// สถานะของคำขอ: pending รอรับ -> verified คนขับสแกน QR ยืนยันจุดแล้ว -> collected รับของแล้ว -> delivered ส่งถึงศูนย์แล้ว
+const isOpen = (r) => r.status === 'pending' || r.status === 'verified';
+const isDone = (r) => r.status === 'collected' || r.status === 'delivered';
+const sumCount = (items) => items.reduce((a, i) => a + (i.material === 'non_recyclable' ? 0 : Number(i.count) || 0), 0);
+
+function statusText(r, st) {
+  if (r.status === 'delivered') return 'ส่งถึงศูนย์คัดแยกแล้ว';
+  if (r.status === 'collected') return 'รับของแล้ว';
+  if (r.status === 'verified') return 'คนขับถึงจุดแล้ว กำลังตรวจของ';
+  return st ? `${st.name} จุดที่ ${st.seq}` : 'ยังจัดรถไม่ลง';
+}
+
+function statusTag(r, st) {
+  if (isDone(r)) return `<span class="tag gray">${statusText(r)} ${num(r.actual_kg, 1)} กก.</span>`;
+  if (r.status === 'verified') return `<span class="tag here">${statusText(r)}</span>`;
+  return st ? `<span class="tag">${esc(st.name)} ถึงประมาณ ${hhmm(st.eta)}</span>` : '<span class="tag warn">รอจัดรถ</span>';
+}
+
+// QR ของแต่ละคำขอ โหลดเมื่อสมาชิกเปิดดู แล้วเก็บไว้ใช้ซ้ำ
+const tickets = {};
+const openTickets = new Set();
+function ticketHtml(id) {
+  const t = tickets[id];
+  if (!t) return '<p class="loading">กำลังโหลด QR…</p>';
+  return `<div class="qr">${t.svg}</div><p>รหัส <strong class="code">${esc(t.code)}</strong></p>
+    <p class="muted">แสดง QR นี้ให้คนขับสแกนเมื่อมาถึง หรือบอกรหัสแทนได้</p>`;
+}
+
 function stopIndex() {
   const idx = {};
   for (const route of S.plan?.routes || []) {
@@ -67,7 +95,7 @@ function renderAll() {
   badge.classList.toggle('mock', S.ai_mode !== 'claude');
   renderMember();
   if (view === 'dispatch') renderDispatch();
-  if (view === 'driver') renderDriver();
+  if (view === 'driver' && !driverBusy()) renderDriver();
   if (view === 'records') renderRecords();
 }
 
@@ -93,11 +121,10 @@ function renderMember() {
   const mine = S.requests.filter((r) => r.member_id === me.id).reverse();
   $('#my-requests').innerHTML = mine.length ? mine.map((r) => {
     const st = idx[r.id];
-    const status = r.status === 'collected'
-      ? `<span class="tag gray">รับแล้ว ${num(r.actual_kg, 1)} กก.</span>`
-      : st ? `<span class="tag">${esc(st.name)} ถึงประมาณ ${hhmm(st.eta)}</span>` : '<span class="tag warn">รอจัดรถ</span>';
-    return `<div class="list-item"><strong>#${r.id}</strong> ${status}<br>${itemsText(r.items)} · รวม ${num(r.total_count)} ชิ้น<br>
-      <span class="muted">พิกัด ${coordLink(r.lat, r.lng)} · นัด ${esc(slotLabel(r.slot))}</span></div>`;
+    const qr = isOpen(r)
+      ? `<details class="ticket" data-ticket="${r.id}" ${openTickets.has(r.id) ? 'open' : ''}><summary>QR สำหรับให้คนขับสแกน</summary><div class="qr-box">${ticketHtml(r.id)}</div></details>` : '';
+    return `<div class="list-item"><strong>#${r.id}</strong> ${statusTag(r, st)}<br>${itemsText(r.items)} · รวม ${num(r.total_count)} ชิ้น<br>
+      <span class="muted">พิกัด ${coordLink(r.lat, r.lng)} · นัด ${esc(slotLabel(r.slot))}</span>${qr}</div>`;
   }).join('') : '<p class="muted">ยังไม่มีคำขอ</p>';
 }
 
@@ -224,11 +251,13 @@ async function submitRequest() {
       .filter((i) => i.count > 0);
     const res = await api('/requests', { member_id: me.id, lat: pin.lat, lng: pin.lng, slot, size: draft.size, items, photo: photoThumb });
     const r = res.request;
+    try { tickets[r.id] = await api(`/requests/${r.id}/ticket`); } catch { /* เปิดดู QR ได้จากรายการคำขอ */ }
     $('#submit-result').innerHTML = `<div class="notice ok">
       <strong>แจ้งรับเรียบร้อย เลขที่ #${r.id}</strong><br>
       พิกัด ${coordLink(r.lat, r.lng)}<br>
       จำนวน ${itemsText(r.items)} รวม ${num(r.total_count)} ชิ้น<br>
       ${res.stop ? `${esc(res.stop.vehicle)} จะถึงประมาณ ${hhmm(res.stop.eta)} (จุดที่ ${res.stop.seq} ของรอบ)` : 'ช่วงเวลานี้ยังจัดรถไม่ลง ผู้จัดรถจะติดต่อกลับ'}
+      ${tickets[r.id] ? `<div class="qr-box">${ticketHtml(r.id)}</div>` : ''}
     </div>`;
     draft = null; photoThumb = '';
     $('#photo-preview').hidden = true;
@@ -268,10 +297,11 @@ function renderDispatch() {
   }
   for (const r of S.requests) {
     const st = idx[r.id];
-    const done = r.status === 'collected';
+    const done = isDone(r);
+    const here = r.status === 'verified';
     const fresh = now - r.created_at < 90 ? 'new' : '';
-    const icon = done ? pinIcon('✓', '#94a3b8', 'done') : st ? pinIcon(st.seq, st.color, fresh) : pinIcon('!', '#b91c1c', fresh);
-    const where = done ? `รับแล้ว ${num(r.actual_kg, 1)} กก.` : st ? `${esc(st.name)} · ถึงประมาณ ${hhmm(st.eta)}` : 'ยังจัดรถไม่ลง';
+    const icon = done ? pinIcon('✓', '#94a3b8', 'done') : st ? pinIcon(st.seq, st.color, `${fresh} ${here ? 'here' : ''}`) : pinIcon('!', '#b91c1c', fresh);
+    const where = done ? `${statusText(r)} ${num(r.actual_kg, 1)} กก.` : here ? statusText(r) : st ? `${esc(st.name)} · ถึงประมาณ ${hhmm(st.eta)}` : 'ยังจัดรถไม่ลง';
     L.marker([r.lat, r.lng], { icon }).addTo(dLayer).bindPopup(
       `<strong>#${r.id} ${esc(r.member_name)}</strong><br>${where}<br>นัด ${esc(slotLabel(r.slot))}<br>
        ${itemsText(r.items)}<br>รวม ${num(r.total_count)} ชิ้น · ประมาณ ${num(r.est_kg, 1)} กก.<br>พิกัด ${coordLink(r.lat, r.lng)}`);
@@ -283,7 +313,7 @@ function renderDispatch() {
   const fitKey = `${box.x}x${box.y}`;
   if (dFitted !== fitKey) { dMap.fitBounds(bounds, { padding: [24, 24] }); dFitted = fitKey; }
 
-  const pending = S.requests.filter((r) => r.status === 'pending');
+  const pending = S.requests.filter(isOpen);
   const stops = plan.routes.reduce((a, r) => a + r.stops.length, 0);
   $('#plan-stats').innerHTML = `
     <div class="stat"><b>${num(stops)}/${num(pending.length)}</b><span>จุดที่จัดลงรถ</span></div>
@@ -307,7 +337,7 @@ function renderDispatch() {
     return `<div class="list-item"><strong>${esc(r.member_name)}</strong> แจ้งรับ #${r.id} <span class="muted">${timeText(r.created_at)}</span><br>
       พิกัด ${coordLink(r.lat, r.lng)}<br>
       จำนวน ${itemsText(r.items)} · รวม <strong>${num(r.total_count)} ชิ้น</strong><br>
-      <span class="muted">นัด ${esc(slotLabel(r.slot))} · ${r.status === 'collected' ? 'รับแล้ว' : st ? `${esc(st.name)} จุดที่ ${st.seq}` : 'ยังจัดรถไม่ลง'}</span></div>`;
+      <span class="muted">นัด ${esc(slotLabel(r.slot))} · ${esc(statusText(r, st))}</span></div>`;
   }).join('');
 
   $('#factory-list').innerHTML = (plan.factory_kg || []).map((f) =>
@@ -315,7 +345,17 @@ function renderDispatch() {
     + '<p class="muted">รถทุกคันกลับมาส่งที่ศูนย์คัดแยก แล้วแยกส่งโรงงานตามชนิดวัสดุ</p>';
 }
 
-// ---------- คนขับ ----------
+// ---------- คนขับรถรับของ ----------
+// ขั้นตอนต่อหนึ่งจุด: นำทาง -> ถึงจุด สแกน QR ของลูกค้า (ยืนยันจุด) -> ตรวจรายการและชั่งน้ำหนัก (ยืนยันของ)
+// เมื่อรับครบ: กลับศูนย์คัดแยก แล้วกดส่งของเพื่อปิดรอบ
+let scanFor = null;     // เลขคำขอที่กำลังเปิดหน้าสแกน
+let scanStream = null;
+let scanTimer = null;
+let scanBusy = false;
+
+// ระหว่างสแกนหรือกำลังพิมพ์ตัวเลข ไม่วาดหน้าใหม่ เพื่อไม่ให้กล้องดับหรือค่าที่พิมพ์หาย
+const driverBusy = () => scanFor !== null || !!document.activeElement?.closest?.('#driver-stops input');
+
 function renderDriver() {
   const sel = $('#driver-vehicle');
   if (sel.options.length !== S.vehicles.length) {
@@ -327,36 +367,201 @@ function renderDriver() {
   const veh = S.vehicles.find((v) => v.id === vid);
   const route = (S.plan?.routes || []).find((r) => r.vehicle_id === vid);
   const byId = Object.fromEntries(S.requests.map((r) => [r.id, r]));
+  const stops = (route?.stops || []).map((s) => ({ ...s, r: byId[s.request_id] })).filter((s) => s.r);
+  const open = stops.filter((s) => isOpen(s.r));
+  const onTruck = S.requests.filter((r) => r.status === 'collected' && r.vehicle_id === vid);
+  const total = open.length + onTruck.length;
+  $('#driver-progress').style.width = total ? `${Math.round((onTruck.length / total) * 100)}%` : '0%';
 
-  if (!veh?.active) { $('#driver-summary').textContent = 'รถคันนี้หยุดใช้งานอยู่'; $('#driver-stops').innerHTML = ''; return; }
-  if (!route || !route.stops.length) { $('#driver-summary').textContent = 'ยังไม่มีงานในรอบนี้'; $('#driver-stops').innerHTML = ''; return; }
+  $('#driver-summary').textContent = !veh?.active ? 'รถคันนี้หยุดใช้งานอยู่'
+    : open.length ? `เหลือ ${open.length} จุด · รับแล้ว ${onTruck.length} จุด · ระยะทางรอบนี้ ${num(route.km, 1)} กม.`
+    : onTruck.length ? 'รับครบทุกจุดแล้ว กลับไปส่งของที่ศูนย์คัดแยก' : 'ยังไม่มีงานในรอบนี้';
 
-  const left = route.stops.filter((s) => byId[s.request_id].status !== 'collected').length;
-  $('#driver-summary').textContent = `${route.stops.length} จุด · ${num(route.km, 1)} กม. · เหลืออีก ${left} จุด`;
-  $('#driver-stops').innerHTML = route.stops.map((s, n) => {
-    const r = byId[s.request_id];
-    const done = r.status === 'collected';
-    return `<div class="card stop ${done ? 'done' : ''}">
-      <div class="seq">${n + 1}</div>
-      <div>
-        ${r.has_photo ? `<img src="/api/requests/${r.id}/photo" alt="รูปที่สมาชิกแนบ" loading="lazy">` : ''}
-        <strong>${hhmm(s.eta)} · ${esc(r.member_name)}</strong><br>
-        <span class="muted">${esc(r.address)} · นัด ${esc(slotLabel(r.slot))}</span><br>
-        พิกัด ${coordLink(r.lat, r.lng)} <a href="${mapsUrl(r.lat, r.lng)}" target="_blank" rel="noopener">นำทาง</a><br>
-        ${itemsText(r.items)}<br>
-        รวม <strong>${num(r.total_count)} ชิ้น</strong> · ประมาณ ${num(r.est_kg, 1)} กก.
-        ${done ? `<div class="notice ok">รับแล้ว ${num(r.actual_kg, 1)} กก.</div>`
-          : `<div class="collect"><input type="number" min="0.1" step="0.1" inputmode="decimal" value="${r.est_kg}" id="kg-${r.id}" aria-label="น้ำหนักจริง (กก.)"><span>กก.</span>
-             <button type="button" class="btn primary small" data-collect="${r.id}">รับแล้ว</button></div>`}
-      </div></div>`;
-  }).join('');
+  const nextId = open[0]?.r.id;
+  $('#driver-stops').innerHTML = veh?.active ? stops.map((s, n) => stopCard(s, n, s.r.id === nextId)).join('') : '';
+  renderDriverEnd(vid, open, onTruck);
+}
+
+const checkItems = (r) => r.items.filter((i) => i.material !== 'non_recyclable');
+
+function stopCard(s, n, isNext) {
+  const r = s.r;
+  let body;
+  if (isDone(r)) {
+    body = `<div class="notice ok">รับแล้ว ${num(r.actual_kg, 1)} กก.${r.actual_items ? ` · นับได้ ${num(sumCount(r.actual_items))} ชิ้น` : ''}</div>`;
+  } else if (r.status === 'verified') {
+    const far = r.verify_distance_m != null && r.verify_distance_m > 200;
+    body = `<div class="notice ${far ? '' : 'ok'}">ยืนยันจุดแล้ว ${timeText(r.verified_at)}${r.verify_distance_m != null ? ` · สแกนห่างจากหมุด ${num(r.verify_distance_m)} ม.${far ? ' ซึ่งไกลกว่าปกติ' : ''}` : ''}</div>
+      <p class="muted">ตรวจของให้ตรงกับรายการ แก้จำนวนถ้าไม่ตรง แล้วชั่งน้ำหนัก</p>
+      <ul class="items">${checkItems(r).map((i, k) => `<li><div><div class="name">${esc(i.name_th)}</div><div class="tip">แจ้งไว้ ${num(i.count)} ชิ้น</div></div>
+        <div class="count"><input type="number" min="0" inputmode="numeric" value="${Number(i.count) || 0}" data-actual="${r.id}" data-k="${k}" aria-label="จำนวนที่รับจริง ${esc(i.name_th)}"><span>ชิ้น</span></div></li>`).join('')}</ul>
+      <div class="collect"><label for="kg-${r.id}">น้ำหนักจริง</label>
+        <input type="number" min="0.1" step="0.1" inputmode="decimal" value="${Number(r.est_kg).toFixed(1)}" id="kg-${r.id}"><span>กก.</span>
+        <button type="button" class="btn primary small" data-collect="${r.id}">ยืนยันรับของ</button></div>`;
+  } else if (scanFor === r.id) {
+    body = `<div class="scanner">
+      <p><strong>สแกน QR จากมือถือของลูกค้า</strong> เพื่อยืนยันว่ามาถูกจุด</p>
+      <video id="scan-video" playsinline muted hidden></video>
+      <div class="row">
+        <button type="button" class="btn primary small" data-scan="camera">เปิดกล้องสแกน</button>
+        <label class="btn ghost small" for="scan-file">แนบรูป QR</label>
+        <input id="scan-file" type="file" accept="image/*" hidden>
+      </div>
+      <form class="row" id="scan-form">
+        <input type="text" id="scan-code" placeholder="หรือพิมพ์รหัส 6 ตัว" maxlength="6" autocomplete="off" autocapitalize="characters" aria-label="รหัสรับของ 6 ตัว">
+        <button type="submit" class="btn ghost small">ยืนยันรหัส</button>
+      </form>
+      <p id="scan-msg" class="muted" role="status"></p>
+      <div><button type="button" class="btn ghost small" data-scan="cancel">ยกเลิก</button></div>
+    </div>`;
+  } else {
+    body = `<div class="row actions"><a class="btn ghost small" href="${mapsUrl(r.lat, r.lng)}" target="_blank" rel="noopener">นำทาง</a>
+      <button type="button" class="btn ${isNext ? 'primary' : 'ghost'} small" data-arrive="${r.id}">ถึงจุดแล้ว สแกน QR</button></div>`;
+  }
+  return `<div class="card stop ${isDone(r) ? 'done' : ''} ${isNext ? 'next' : ''}">
+    <div class="seq">${n + 1}</div>
+    <div>
+      ${r.has_photo ? `<img src="/api/requests/${r.id}/photo" alt="รูปที่สมาชิกแนบ" loading="lazy">` : ''}
+      ${isNext ? '<span class="tag">จุดถัดไป</span><br>' : ''}
+      <strong>${hhmm(s.eta)} · ${esc(r.member_name)}</strong><br>
+      <span class="muted">${esc(r.address)} · นัด ${esc(slotLabel(r.slot))}</span><br>
+      พิกัด ${coordLink(r.lat, r.lng)}<br>
+      ${itemsText(r.items)}<br>
+      รวม <strong>${num(r.total_count)} ชิ้น</strong> · ประมาณ ${num(r.est_kg, 1)} กก.
+      ${body}
+    </div></div>`;
+}
+
+function renderDriverEnd(vid, open, onTruck) {
+  const depot = S.config.depot;
+  const last = [...(S.dropoffs || [])].reverse().find((d) => d.vehicle_id === vid);
+  let out = '';
+  if (onTruck.length) {
+    const kg = onTruck.reduce((a, r) => a + (r.actual_kg || 0), 0);
+    out += `<div class="card ${open.length ? '' : 'next'}">
+      <h2>${open.length ? 'ของบนรถตอนนี้' : 'รับครบแล้ว กลับศูนย์คัดแยก'}</h2>
+      <p>${num(onTruck.length)} จุด · ${num(kg, 1)} กก.</p>
+      <p class="muted">${esc(depot.name)} · พิกัด ${coordLink(depot.lat, depot.lng)}</p>
+      <div class="row actions"><a class="btn ghost small" href="${mapsUrl(depot.lat, depot.lng)}" target="_blank" rel="noopener">นำทางไปศูนย์</a>
+        <button type="button" class="btn ${open.length ? 'ghost' : 'primary'} small" data-dropoff="${vid}" data-open="${open.length}">ส่งของที่ศูนย์แล้ว</button></div></div>`;
+  }
+  if (last) {
+    out += `<div class="card"><h2>รอบที่ส่งล่าสุด</h2>
+      <p>${timeText(last.at)} · ${num(last.stops)} จุด · ${num(last.pieces)} ชิ้น · ${num(last.kg, 1)} กก.</p>
+      ${last.factories.filter((f) => f.kg > 0).map((f) => `<div class="list-item">${esc(f.name)}<br><span class="muted">${num(f.kg, 1)} กก.</span></div>`).join('')}</div>`;
+  }
+  $('#driver-end').innerHTML = out;
+}
+
+// ----- สแกน QR -----
+function scanMsg(text) { const el = $('#scan-msg'); if (el) el.textContent = text; }
+
+function stopCamera() {
+  clearInterval(scanTimer);
+  scanTimer = null;
+  if (scanStream) scanStream.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+}
+
+async function decodeQR(source, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, w, h);
+  g.drawImage(source, 0, 0, w, h);
+  if ('BarcodeDetector' in window) {
+    try {
+      const hits = await new BarcodeDetector({ formats: ['qr_code'] }).detect(c);
+      if (hits.length) return hits[0].rawValue;
+    } catch { /* ใช้ตัวอ่านสำรองด้านล่าง */ }
+  }
+  if (window.jsQR) {
+    const hit = jsQR(g.getImageData(0, 0, w, h).data, w, h);
+    if (hit) return hit.data;
+  }
+  return null;
+}
+
+async function startCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) return scanMsg('อุปกรณ์นี้เปิดกล้องจากหน้าเว็บไม่ได้ (ต้องเป็น HTTPS หรือ localhost) ใช้แนบรูป QR หรือพิมพ์รหัสแทน');
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch { return scanMsg('เปิดกล้องไม่ได้ ใช้แนบรูป QR หรือพิมพ์รหัสแทน'); }
+  const video = $('#scan-video');
+  if (!video) return stopCamera();
+  video.srcObject = scanStream;
+  video.hidden = false;
+  await video.play().catch(() => {});
+  scanMsg('หันกล้องไปที่ QR บนมือถือของลูกค้า');
+  scanTimer = setInterval(async () => {
+    if (scanBusy || video.readyState < 2) return;
+    scanBusy = true;
+    try {
+      const value = await decodeQR(video, video.videoWidth, video.videoHeight);
+      if (value) await submitScan(value);
+    } finally { scanBusy = false; }
+  }, 350);
+}
+
+async function scanFromFile(file) {
+  try {
+    const img = await loadImage(file);
+    const k = Math.min(1, 1200 / Math.max(img.naturalWidth, img.naturalHeight));
+    const value = await decodeQR(img, Math.round(img.naturalWidth * k), Math.round(img.naturalHeight * k));
+    if (!value) return scanMsg('อ่าน QR จากรูปนี้ไม่ได้ ลองรูปที่ชัดขึ้น หรือพิมพ์รหัสแทน');
+    await submitScan(value);
+  } catch (err) { scanMsg(err.message); }
+}
+
+// ตำแหน่งของคนขับตอนสแกน ถ้าอุปกรณ์ให้ได้ภายใน 1.5 วินาที ใช้บันทึกว่าสแกนห่างจากหมุดเท่าไร
+function driverPosition() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation || !window.isSecureContext) return resolve(null);
+    const timer = setTimeout(() => resolve(null), 1500);
+    navigator.geolocation.getCurrentPosition(
+      (p) => { clearTimeout(timer); resolve({ lat: p.coords.latitude, lng: p.coords.longitude }); },
+      () => { clearTimeout(timer); resolve(null); },
+      { maximumAge: 30000, timeout: 1500 });
+  });
+}
+
+async function submitScan(value) {
+  const id = scanFor;
+  if (!id) return;
+  scanMsg('กำลังตรวจรหัส…');
+  try {
+    const pos = await driverPosition();
+    await api(`/requests/${id}/verify`, { scan: value, vehicle_id: Number($('#driver-vehicle').value), ...(pos || {}) });
+    stopCamera();
+    scanFor = null;
+    toast('ยืนยันจุดแล้ว ตรวจของต่อได้เลย');
+    await refresh();
+    renderDriver();
+  } catch (err) { scanMsg(err.message); }
+}
+
+async function collectStop(id, btn) {
+  const r = S.requests.find((x) => x.id === id);
+  const items = checkItems(r).map((i, k) => ({
+    name_th: i.name_th, material: i.material, prep_tip_th: '',
+    count: Math.max(0, parseInt($(`[data-actual="${id}"][data-k="${k}"]`).value, 10) || 0),
+  }));
+  btn.disabled = true;
+  try {
+    const res = await api(`/requests/${id}/collect`, { actual_kg: Number($(`#kg-${id}`).value), items });
+    toast(`รับของแล้ว สมาชิกได้รับ ${num(res.points)} แต้ม`);
+    document.activeElement?.blur();
+    await refresh();
+    renderDriver();
+  } catch (err) { toast(err.message); btn.disabled = false; }
 }
 
 // ---------- บันทึก ----------
 function renderRecords() {
   const idx = stopIndex();
   const rows = [...S.requests].reverse();
-  const collected = rows.filter((r) => r.status === 'collected');
+  const collected = rows.filter(isDone);
   $('#records-totals').innerHTML = `
     <div class="stat"><b>${num(rows.length)}</b><span>คำขอทั้งหมด</span></div>
     <div class="stat"><b>${num(rows.reduce((a, r) => a + r.total_count, 0))}</b><span>ชิ้นที่แจ้ง</span></div>
@@ -364,12 +569,13 @@ function renderRecords() {
     <div class="stat"><b>${num(collected.reduce((a, r) => a + (r.actual_kg || 0), 0), 1)} กก.</b><span>น้ำหนักจริงที่รับ</span></div>`;
   $('#records-table').innerHTML = `<thead><tr>
       <th>เลขที่</th><th>เวลาแจ้ง</th><th>สมาชิก</th><th>พิกัด</th><th>ช่วงนัด</th><th>รายการและจำนวน</th>
-      <th>รวม (ชิ้น)</th><th>ประมาณ (กก.)</th><th>จริง (กก.)</th><th>สถานะ</th></tr></thead><tbody>${rows.map((r) => {
+      <th>รวม (ชิ้น)</th><th>ประมาณ (กก.)</th><th>ยืนยันจุด</th><th>รับจริง (ชิ้น)</th><th>จริง (กก.)</th><th>สถานะ</th></tr></thead><tbody>${rows.map((r) => {
     const st = idx[r.id];
     return `<tr><td>#${r.id}</td><td>${timeText(r.created_at)}</td><td>${esc(r.member_name)}</td><td>${coordLink(r.lat, r.lng)}</td>
       <td>${esc(slotLabel(r.slot))}</td><td>${itemsText(r.items)}</td><td class="num">${num(r.total_count)}</td>
-      <td class="num">${num(r.est_kg, 1)}</td><td class="num">${r.actual_kg ? num(r.actual_kg, 1) : '–'}</td>
-      <td>${r.status === 'collected' ? '<span class="tag gray">รับแล้ว</span>' : st ? `<span class="tag">${esc(st.name)}</span>` : '<span class="tag warn">รอจัดรถ</span>'}</td></tr>`;
+      <td class="num">${num(r.est_kg, 1)}</td><td>${r.verified_at ? timeText(r.verified_at) : '–'}</td><td class="num">${r.actual_items ? num(sumCount(r.actual_items)) : '–'}</td>
+      <td class="num">${r.actual_kg ? num(r.actual_kg, 1) : '–'}</td>
+      <td>${isDone(r) || r.status === 'verified' ? `<span class="tag ${isDone(r) ? 'gray' : 'here'}">${statusText(r)}</span>` : st ? `<span class="tag">${esc(st.name)}</span>` : '<span class="tag warn">รอจัดรถ</span>'}</td></tr>`;
   }).join('')}</tbody>`;
 }
 
@@ -378,6 +584,7 @@ function show(next) {
   view = ['member', 'dispatch', 'driver', 'records'].includes(next) ? next : 'member';
   for (const v of ['member', 'dispatch', 'driver', 'records']) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  if (view !== 'driver') { stopCamera(); scanFor = null; }
   if (location.hash.slice(1) !== view) history.replaceState(null, '', '#' + view);
   if (S) renderAll();
   if (view === 'member' && pinMap) pinMap.invalidateSize();
@@ -430,15 +637,47 @@ $('#command-form').addEventListener('submit', async (e) => {
     await refresh();
   } catch (err) { $('#command-reply').textContent = err.message; }
 });
-$('#driver-vehicle').addEventListener('change', renderDriver);
-$('#driver-stops').addEventListener('click', async (e) => {
-  const id = e.target.dataset.collect;
+$('#my-requests').addEventListener('toggle', async (e) => {
+  const id = Number(e.target.dataset?.ticket);
   if (!id) return;
+  if (!e.target.open) { openTickets.delete(id); return; }
+  openTickets.add(id);
+  if (!tickets[id]) {
+    try { tickets[id] = await api(`/requests/${id}/ticket`); } catch (err) { return toast(err.message); }
+  }
+  e.target.querySelector('.qr-box').innerHTML = ticketHtml(id);
+}, true);  // toggle ไม่ bubble จึงต้องจับในช่วง capture
+
+$('#driver-vehicle').addEventListener('change', () => { stopCamera(); scanFor = null; renderDriver(); });
+$('#driver-stops').addEventListener('click', (e) => {
+  const d = e.target.dataset;
+  if (d.arrive) { stopCamera(); scanFor = Number(d.arrive); renderDriver(); $('#scan-code')?.focus(); }
+  else if (d.scan === 'camera') startCamera();
+  else if (d.scan === 'cancel') { stopCamera(); scanFor = null; renderDriver(); }
+  else if (d.collect) collectStop(Number(d.collect), e.target);
+});
+$('#driver-stops').addEventListener('submit', (e) => {
+  if (e.target.id !== 'scan-form') return;
+  e.preventDefault();
+  const code = $('#scan-code').value.trim();
+  if (code) submitScan(code);
+});
+$('#driver-stops').addEventListener('change', (e) => {
+  if (e.target.id !== 'scan-file') return;
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) scanFromFile(f);
+});
+$('#driver-end').addEventListener('click', async (e) => {
+  const vid = e.target.dataset.dropoff;
+  if (!vid) return;
+  if (Number(e.target.dataset.open) > 0 && !confirm('ยังมีจุดที่ยังไม่ได้รับ ต้องการส่งของที่ศูนย์ตอนนี้ใช่ไหม')) return;
   e.target.disabled = true;
   try {
-    const res = await api(`/requests/${id}/collect`, { actual_kg: Number($(`#kg-${id}`).value) });
-    toast(`บันทึกแล้ว สมาชิกได้รับ ${num(res.points)} แต้ม`);
+    const res = await api(`/vehicles/${vid}/dropoff`, {});
+    toast(`ส่งของแล้ว ${num(res.stops)} จุด รวม ${num(res.kg, 1)} กก.`);
     await refresh();
+    renderDriver();
   } catch (err) { toast(err.message); e.target.disabled = false; }
 });
 

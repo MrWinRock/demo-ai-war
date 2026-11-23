@@ -4,7 +4,7 @@ import random
 import time
 
 from . import db
-from .config import SIZES, SLOTS, VEHICLE_COLORS
+from .config import CODE_ALPHABET, SIZES, SLOTS, VEHICLE_COLORS
 from .estimate import estimate
 
 NAMES = [
@@ -30,6 +30,7 @@ N_REQUESTS = 20  # สมาชิก 4 คนแรกไม่มีคำข�
 
 def run() -> None:
     rnd = random.Random(7)
+    code_rnd = random.Random(11)  # แยกตัวสุ่มของรหัส เพื่อไม่ให้กระทบลำดับการสุ่มข้อมูลตัวอย่าง
     for i, name in enumerate(NAMES, start=1):
         lat = CENTER[0] + rnd.uniform(-0.030, 0.030)
         lng = CENTER[1] + rnd.uniform(-0.035, 0.035)
@@ -53,8 +54,9 @@ def run() -> None:
         items = [{"name_th": a, "material": b, "count": c * units, "prep_tip_th": ""} for a, b, c in rnd.choice(BUNDLES)]
         est = estimate(items)
         db.execute(
-            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume, est_kg, est_value, created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume, est_kg, est_value, code, created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (m["id"], m["lat"], m["lng"], slot["id"], slot["start"], slot["end"], json.dumps(items, ensure_ascii=False),
-             json.dumps(est["materials"]), size, units, est["est_kg"], est["est_value"], now + n),
+             json.dumps(est["materials"]), size, units, est["est_kg"], est["est_value"],
+             "".join(code_rnd.choice(CODE_ALPHABET) for _ in range(6)), now + n),
         )
