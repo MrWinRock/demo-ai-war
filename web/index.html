@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>แยกถูก รับถึงบ้าน</title>
+  <meta name="theme-color" content="#15803d">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>แยกถูก รับถึงบ้าน</div>
+    <span id="ai-badge" class="badge"></span>
+  </header>
+
+  <main>
+    <!-- สมาชิก -->
+    <section id="view-member" class="view narrow">
+      <div class="card">
+        <label class="field">สมาชิก
+          <select id="member-select"></select>
+        </label>
+        <p class="muted">แต้มสะสม <strong id="member-points">0</strong> แต้ม</p>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">1</span>แนบรูปของที่จะให้มารับ</h2>
+        <label class="btn primary block" for="photo">เลือกรูปจากเครื่อง</label>
+        <input id="photo" type="file" accept="image/*" hidden>
+        <div id="photo-preview" class="preview" hidden></div>
+        <div id="ai-result"></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">2</span>ปักหมุดจุดรับ</h2>
+        <div id="pinmap" class="map small"></div>
+        <p class="muted">ลากหมุดหรือแตะแผนที่เพื่อย้าย พิกัด <strong id="pin-coords">–</strong></p>
+        <button id="use-gps" class="btn ghost" type="button">ใช้ตำแหน่งปัจจุบัน</button>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">3</span>เลือกช่วงเวลา</h2>
+        <div id="slot-chips" class="chips"></div>
+        <button id="submit-request" class="btn primary block" type="button" disabled>แจ้งให้มารับ</button>
+        <div id="submit-result"></div>
+      </div>
+
+      <div class="card">
+        <h2>คำขอของฉัน</h2>
+        <div id="my-requests"></div>
+      </div>
+    </section>
+
+    <!-- ผู้จัดรถ -->
+    <section id="view-dispatch" class="view wide" hidden>
+      <div class="dispatch-grid">
+        <div id="dispatch-map" class="map big"></div>
+        <aside class="side">
+          <div class="card">
+            <div id="plan-stats" class="stats"></div>
+            <p id="plan-summary" class="muted"></p>
+            <div class="row">
+              <button id="replan" class="btn primary" type="button">จัดเส้นทางใหม่</button>
+              <button id="reset" class="btn ghost" type="button">รีเซ็ตข้อมูลตัวอย่าง</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>สั่งด้วยภาษาพูด</h2>
+            <form id="command-form" class="row">
+              <input id="command-text" type="text" placeholder="เช่น รถคัน 2 เสีย" autocomplete="off">
+              <button class="btn primary" type="submit">ส่ง</button>
+            </form>
+            <p id="command-reply" class="muted"></p>
+          </div>
+          <div class="card">
+            <h2>รถ</h2>
+            <div id="vehicle-list"></div>
+          </div>
+          <div class="card">
+            <h2>แจ้งเข้ามาล่าสุด</h2>
+            <div id="feed"></div>
+          </div>
+          <div class="card">
+            <h2>ส่งต่อโรงงาน</h2>
+            <div id="factory-list"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- คนขับ -->
+    <section id="view-driver" class="view narrow" hidden>
+      <div class="card">
+        <label class="field">รถ
+          <select id="driver-vehicle"></select>
+        </label>
+        <p id="driver-summary" class="muted"></p>
+      </div>
+      <div id="driver-stops"></div>
+    </section>
+
+    <!-- บันทึก -->
+    <section id="view-records" class="view wide" hidden>
+      <div class="card">
+        <div class="row between">
+          <h2>บันทึกการแจ้งรับ</h2>
+          <a class="btn ghost" href="/api/records.csv">ดาวน์โหลด CSV</a>
+        </div>
+        <div id="records-totals" class="stats"></div>
+        <div class="table-wrap">
+          <table id="records-table"></table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-view="member" class="active" type="button">สมาชิก</button>
+    <button data-view="dispatch" type="button">ผู้จัดรถ</button>
+    <button data-view="driver" type="button">คนขับ</button>
+    <button data-view="records" type="button">บันทึก</button>
+  </nav>
+
+  <div id="toast" role="status"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

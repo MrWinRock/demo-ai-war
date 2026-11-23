@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # ใส่ค่าในไฟล์ .env (ดู .env.example) ถ้าไม่ใส่ ระบบจะใช้ผลแยกขยะแบบจำลอง
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - data:/data
+      # แก้โค้ดแล้วเห็นผลทันทีโดยไม่ต้อง build ใหม่
+      - ./app:/srv/app
+      - ./web:/srv/web
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/srv/app"]
+    restart: unless-stopped
+volumes:
+  data:
