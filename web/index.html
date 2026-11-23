@@ -14,38 +14,46 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#member" aria-label="แยกถูก รับถึงบ้าน หน้าแรก">
+  <header class="topbar" id="topbar" hidden>
+    <a class="brand" href="#" aria-label="แยกถูก รับถึงบ้าน หน้าแรก">
       <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#10b981"/><path d="M10.2 20.6A7 7 0 0 1 16 9m0 0-2.6-2.2M16 9l-2.2 2.6M21.8 11.4A7 7 0 0 1 16 23m0 0 2.6 2.2M16 23l2.2-2.6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span>แยกถูก <b>รับถึงบ้าน</b></span>
     </a>
-    <nav class="tabs" aria-label="เลือกหน้า">
-      <button data-view="member" class="active" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-4 4-5.5 7-5.5s6 1.5 7 5.5"/></svg><span>สมาชิก</span>
-      </button>
-      <button data-view="dispatch" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 7v12l5-2 6 2 5-2V5l-5 2z"/><path d="M9 5v12M15 7v12"/></svg><span>ผู้จัดรถ</span>
-      </button>
-      <button data-view="driver" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="17.5" cy="17.5" r="1.8"/></svg><span>คนขับ</span>
-      </button>
-      <button data-view="records" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h11M8 12h11M8 17h11M4.5 7h.01M4.5 12h.01M4.5 17h.01"/></svg><span>บันทึก</span>
-      </button>
-    </nav>
+    <nav class="tabs" id="tabs" aria-label="เลือกหน้า"></nav>
     <span id="ai-badge" class="badge"></span>
+    <div class="who">
+      <span class="who-text"><strong id="who-name"></strong><small id="who-role"></small></span>
+      <button id="logout" class="btn ghost small" type="button">ออกจากระบบ</button>
+    </div>
   </header>
 
-  <main>
+  <!-- เข้าสู่ระบบ -->
+  <section id="view-login" class="login" hidden>
+    <div class="login-card">
+      <div class="login-brand"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#10b981"/><path d="M10.2 20.6A7 7 0 0 1 16 9m0 0-2.6-2.2M16 9l-2.2 2.6M21.8 11.4A7 7 0 0 1 16 23m0 0 2.6 2.2M16 23l2.2-2.6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>แยกถูก <b>รับถึงบ้าน</b></span></div>
+      <p class="muted">ถ่ายรูปถุงรีไซเคิล ให้ AI นับและแยก แล้วนัดรถมารับถึงบ้าน</p>
+      <h2>เข้าใช้งานด่วนด้วยบัญชีตัวอย่าง</h2>
+      <div id="quick-login" class="quick-grid"></div>
+      <details class="pw-login">
+        <summary>เข้าด้วยชื่อผู้ใช้และรหัสผ่าน</summary>
+        <form id="login-form">
+          <label>ชื่อผู้ใช้<input id="login-user" type="text" autocomplete="username" autocapitalize="none" required></label>
+          <label>รหัสผ่าน<input id="login-pass" type="password" autocomplete="current-password" required></label>
+          <button class="btn primary block" type="submit">เข้าสู่ระบบ</button>
+        </form>
+      </details>
+      <p id="login-error" class="notice" role="alert" hidden></p>
+    </div>
+  </section>
+
+  <main id="main" hidden>
     <!-- สมาชิก -->
     <section id="view-member" class="view narrow">
       <div class="hero">
         <div class="hero-text">
-          <p class="eyebrow">สมาชิก</p>
+          <p class="eyebrow" id="member-kind">สมาชิก</p>
           <h1 id="member-hello">สวัสดี</h1>
-          <div class="member-pick">
-            <select id="member-select" aria-label="เปลี่ยนสมาชิก"></select>
-          </div>
+          <p class="hero-sub" id="member-address"></p>
         </div>
         <div class="points" aria-label="แต้มสะสม"><b id="member-points">0</b><small>แต้ม</small></div>
       </div>
@@ -133,6 +141,10 @@
             <div id="vehicle-list"></div>
           </div>
           <div class="card">
+            <h2>กรณีผ่อนปรนและต้องตรวจ</h2>
+            <div id="flag-list"></div>
+          </div>
+          <div class="card">
             <h2>แจ้งเข้ามาล่าสุด</h2>
             <div id="feed"></div>
           </div>
@@ -149,12 +161,14 @@
       <div class="hero driver">
         <div class="hero-text">
           <p class="eyebrow">คนขับรถรับของ</p>
-          <label class="member-pick">รถ
-            <select id="driver-vehicle" aria-label="เลือกรถ"></select>
-          </label>
+          <h1 id="driver-name"></h1>
           <p id="driver-summary" class="hero-sub"></p>
           <div class="progress" aria-hidden="true"><span id="driver-progress"></span></div>
         </div>
+      </div>
+      <div class="card map-card">
+        <div id="driver-map" class="map route" aria-label="แผนที่เส้นทางของรอบนี้"></div>
+        <div id="driver-sheet" class="sheet"></div>
       </div>
       <div id="driver-stops"></div>
       <div id="driver-end"></div>
@@ -173,7 +187,73 @@
         </div>
       </div>
     </section>
+
+    <!-- กระดานราคา -->
+    <section id="view-prices" class="view wide" hidden>
+      <div class="page-head">
+        <div>
+          <h1>ราคารับซื้อวันนี้</h1>
+          <p class="muted">ราคาสูงสุดที่คู่ค้าเสนอ หน่วยบาทต่อกิโลกรัม · ข้อมูลตัวอย่าง ไม่ใช่ราคาตลาดจริง</p>
+        </div>
+        <div class="seg" id="price-range" role="group" aria-label="ช่วงเวลาของกราฟ">
+          <button type="button" data-days="7">7 วัน</button><button type="button" data-days="30" class="active">30 วัน</button><button type="button" data-days="60">60 วัน</button>
+        </div>
+      </div>
+      <div id="ticker" class="ticker" aria-label="สรุปราคาทุกวัสดุ"></div>
+      <div class="price-layout">
+        <div id="price-cards" class="price-cards"></div>
+        <div class="card" id="price-detail"></div>
+      </div>
+    </section>
+
+    <!-- เกณฑ์การรับของ (ผู้ดูแล) -->
+    <section id="view-settings" class="view mid" hidden>
+      <div class="page-head">
+        <div>
+          <h1>เกณฑ์การรับของและการผ่อนปรน</h1>
+          <p class="muted">ค่าที่บันทึกมีผลกับการแจ้งรับ การยืนยันจุด และการตรวจรับทันที</p>
+        </div>
+        <button id="save-settings" class="btn primary" type="button">บันทึกเกณฑ์</button>
+      </div>
+      <form id="settings-form"></form>
+    </section>
+
+    <!-- คู่ค้า (ผู้ดูแล) -->
+    <section id="view-partners" class="view wide" hidden>
+      <div class="page-head">
+        <div>
+          <h1>คู่ค้า</h1>
+          <p class="muted">โรงงานรีไซเคิลและร้านรับซื้อของเก่า ข้อมูลติดต่อเป็นข้อมูลสมมติ</p>
+        </div>
+      </div>
+      <div id="partner-cards" class="partner-grid"></div>
+    </section>
+
+    <!-- คาร์บอน -->
+    <section id="view-carbon" class="view mid" hidden>
+      <div id="carbon-body"></div>
+    </section>
+
+    <!-- พอร์ทัลคู่ค้า -->
+    <section id="view-portal" class="view mid" hidden>
+      <div id="portal-body"></div>
+    </section>
   </main>
+
+  <!-- โหมดนำทางของคนขับ -->
+  <div id="nav" class="nav" hidden aria-label="โหมดนำทาง">
+    <div id="nav-map" class="nav-map"></div>
+    <div class="nav-top">
+      <button id="nav-back" class="round" type="button" aria-label="กลับไปรายการจุดจอด">
+        <svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="nav-title"><small>กำลังนำทางไป</small><strong id="nav-title"></strong></div>
+    </div>
+    <button id="nav-recenter" class="round fab" type="button" aria-label="จัดแผนที่ให้เห็นทั้งเส้นทาง">
+      <svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+    </button>
+    <div class="nav-sheet" id="nav-sheet"></div>
+  </div>
 
   <div id="toast" role="status"></div>
 
@@ -181,5 +261,6 @@
   <!-- ตัวอ่าน QR สำรอง สำหรับเบราว์เซอร์ที่ไม่มี BarcodeDetector -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script src="/app.js"></script>
+  <script src="/portal.js"></script>
 </body>
 </html>

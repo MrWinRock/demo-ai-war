@@ -21,9 +21,10 @@ const ICONS = {
 };
 const ic = (name, size = 18) => `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">${ICONS[name]}</svg>`;
 
-async function api(path, body) {
-  const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+async function api(path, body, method = 'POST') {
+  const opts = body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   const res = await fetch('/api' + path, opts);
+  if (res.status === 401 && !path.startsWith('/login')) showLogin();
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json()).detail; } catch { /* ไม่มีรายละเอียด */ }
@@ -57,7 +58,8 @@ const MAX_PHOTOS = 6;
 const TAGS = 'ABCDEFGHJKLM';  // ต้องตรงกับ BAG_TAGS ใน app/config.py
 const KIND = { bag: 'ถุง', bin: 'ถัง', box: 'กล่อง', pile: 'กอง' };
 
-const material = (key) => S.config.materials[key] || { label: key, price: 0, unit_kg: 0 };
+const material = (key) => S.config.materials[key] || { label: key, price: 0, unit_kg: 0, accepted: false };
+const accepts = (key) => key !== 'non_recyclable' && material(key).accepted;
 const slotLabel = (id) => (S.config.slots.find((s) => s.id === id) || {}).label || id;
 const sumCount = (items) => items.reduce((a, i) => a + (i.material === 'non_recyclable' ? 0 : Math.max(0, parseInt(i.count, 10) || 0)), 0);
 const itemsText = (items) => items.filter((i) => i.material !== 'non_recyclable').map((i) => `${esc(i.name_th)} ${num(i.count)} ชิ้น`).join(', ');
@@ -81,16 +83,12 @@ function statusTag(r, st) {
   return st ? `<span class="badge">${esc(st.name)} ถึงประมาณ ${hhmm(st.eta)}</span>` : '<span class="badge warn">รอจัดรถ</span>';
 }
 
-function stopIndex() {
-  const idx = {};
-  for (const route of S.plan?.routes || []) {
-    route.stops.forEach((s, n) => { idx[s.request_id] = { seq: n + 1, eta: s.eta, name: route.name, color: route.color, vehicle_id: route.vehicle_id }; });
-  }
-  return idx;
-}
+// คำขอแต่ละรายการอยู่บนรถคันไหน ลำดับที่เท่าไร (เซิร์ฟเวอร์คำนวณให้ตามสิทธิ์ของบทบาท)
+const stopIndex = () => S.stops || {};
 
 async function refresh() {
   const res = await fetch('/api/state');
+  if (res.status === 401) { showLogin(); return; }
   const text = await res.text();
   if (text === lastJson) return;
   lastJson = text;
@@ -98,18 +96,21 @@ async function refresh() {
   renderAll();
 }
 
-function renderAll() {
+let renderAll = function () {
   const badge = $('#ai-badge');
   badge.textContent = S.ai_mode === 'claude' ? 'AI: Claude Vision' : 'AI: โหมดจำลอง';
   badge.className = `badge ${S.ai_mode === 'claude' ? 'ai' : 'mock'}`;
-  renderMember();
-  if (view === 'dispatch') renderDispatch();
-  if (view === 'driver' && !driverBusy()) renderDriver();
-  if (view === 'records') renderRecords();
+  renderShell();
+  const pages = {
+    member: renderMember, dispatch: renderDispatch, records: renderRecords, prices: renderPrices, settings: renderSettings,
+    partners: renderPartners, carbon: renderCarbon, portal: renderPortal,
+    driver: () => { if (!driverBusy()) renderDriver(); },
+  };
+  pages[view]?.();
 }
 
 // ---------- สมาชิก ----------
-const currentMember = () => S.members.find((m) => m.id === Number($('#member-select').value)) || S.members[0];
+const currentMember = () => S.me.member;
 
 // QR ของแต่ละคำขอ โหลดเมื่อสมาชิกเปิดดู แล้วเก็บไว้ใช้ซ้ำ
 const tickets = {};
@@ -122,14 +123,10 @@ function ticketHtml(id) {
 }
 
 function renderMember() {
-  const sel = $('#member-select');
-  if (sel.options.length !== S.members.length) {
-    const keep = sel.value;
-    sel.innerHTML = S.members.map((m) => `<option value="${m.id}">${esc(m.name)} · ${esc(m.address)}</option>`).join('');
-    if (keep) sel.value = keep;
-  }
   const me = currentMember();
-  $('#member-hello').textContent = `สวัสดี ${me.name}`;
+  $('#member-kind').textContent = me.kind === 'company' ? 'บริษัท' : 'สมาชิก';
+  $('#member-hello').textContent = me.kind === 'company' ? me.name : `สวัสดี ${me.name}`;
+  $('#member-address').textContent = me.address;
   $('#member-points').textContent = num(me.points);
 
   if (!$('#slot-chips').children.length) {
@@ -138,7 +135,7 @@ function renderMember() {
   if (!pinMap) initPinMap(me);
 
   const idx = stopIndex();
-  const mine = S.requests.filter((r) => r.member_id === me.id).reverse();
+  const mine = [...S.requests].reverse();
   $('#my-requests').innerHTML = mine.length ? mine.map((r) => requestCard(r, idx[r.id])).join('')
     : '<div class="card"><p class="muted">ยังไม่มีคำขอ เริ่มจากถ่ายรูปถุงด้านบนได้เลย</p></div>';
 }
@@ -187,7 +184,7 @@ function bagEst(b) {
   for (const i of b.items) {
     const c = Math.max(0, parseInt(i.count, 10) || 0);
     const m = material(i.material);
-    if (!m.unit_kg || c === 0) continue;
+    if (!m.accepted || !m.unit_kg || c === 0) continue;  // วัสดุที่เกณฑ์ปัจจุบันไม่รับ ไม่นับ
     total += c;
     kg += c * m.unit_kg;
     value += c * m.unit_kg * m.price;
@@ -206,7 +203,7 @@ function bagCard(b, k) {
     b.mixed ? '<span class="badge warn">ของปนกัน ควรแยก</span>' : '',
   ].join('');
   const items = b.items.map((i, n) => {
-    const rejected = i.material === 'non_recyclable';
+    const rejected = !accepts(i.material);
     const control = rejected ? '<span class="badge danger">ไม่รับ</span>'
       : `<div class="stepper"><button type="button" data-step="-1" data-item="${n}" aria-label="ลดจำนวน ${esc(i.name_th)}">−</button>
            <input type="number" min="0" inputmode="numeric" value="${Number(i.count) || 0}" data-item="${n}" aria-label="จำนวน ${esc(i.name_th)}">
@@ -244,7 +241,8 @@ function renderTotals() {
   const sum = bags.reduce((a, b) => { const e = bagEst(b); return { total: a.total + e.total, kg: a.kg + e.kg, value: a.value + e.value }; }, { total: 0, kg: 0, value: 0 });
   $('#bag-totals').innerHTML = !draftBags.length ? '' : `<div class="totals">
     <div><b>${num(bags.length)}</b><span>ถุง</span></div><div><b>${num(sum.total)}</b><span>ชิ้นที่รับได้</span></div>
-    <div><b>${num(sum.kg, 1)}</b><span>กก. โดยประมาณ</span></div><div><b>${num(sum.value, 1)}</b><span>บาท โดยประมาณ</span></div></div>`;
+    <div><b>${num(sum.kg, 1)}</b><span>กก. โดยประมาณ</span></div><div><b>${num(sum.value, 1)}</b><span>บาท โดยประมาณ</span></div></div>
+    ${bags.length && sum.kg < S.config.min_request_kg ? `<div class="notice">น้ำหนักรวมต่ำกว่าขั้นต่ำ ${num(S.config.min_request_kg, 1)} กก. ${S.config.below_min_policy === 'block' ? 'จึงยังแจ้งรับไม่ได้ ลองรวมให้ได้มากขึ้น' : 'ระบบผ่อนปรนให้แจ้งได้ และจะบันทึกไว้ให้ผู้ดูแลทราบ'}</div>` : ''}`;
   $('#dropzone strong').textContent = draftBags.length ? 'เพิ่มรูปอีกถุง' : 'แตะเพื่อถ่ายหรือเลือกรูป';
   updateSubmit();
 }
@@ -306,12 +304,11 @@ async function submitRequest() {
   const btn = $('#submit-request');
   btn.disabled = true;
   try {
-    const me = currentMember();
     const bags = validBags();
     // ส่งเฉพาะรูปที่ยังมีถุงอ้างถึง แล้วเรียงลำดับรูปใหม่
     const used = [...new Set(bags.map((b) => b.photo).filter((p) => p != null))];
     const body = {
-      member_id: me.id, lat: pin.lat, lng: pin.lng, slot,
+      lat: pin.lat, lng: pin.lng, slot,
       photos: used.map((p) => draftPhotos[p].thumb),
       bags: bags.map((b) => ({
         name_th: b.name_th, position_th: b.position_th, kind: b.kind, mixed: b.mixed, size: b.size,
@@ -369,7 +366,9 @@ function renderDispatch() {
     const path = [[depot.lat, depot.lng], ...route.stops.map((s) => [byId[s.request_id].lat, byId[s.request_id].lng]), [depot.lat, depot.lng]];
     if (route.stops.length) L.polyline(path, { color: route.color, weight: 4, opacity: 0.75 }).addTo(dLayer);
   }
-  for (const r of S.requests) {
+  const dayStart = new Date().setHours(0, 0, 0, 0) / 1000;
+  const shown = S.requests.filter((r) => isOpen(r) || (r.collected_at || r.created_at) >= dayStart);  // ไม่เอาประวัติย้อนหลังขึ้นแผนที่
+  for (const r of shown) {
     const st = idx[r.id];
     const done = isDone(r);
     const here = r.status === 'verified';
@@ -408,7 +407,7 @@ function renderDispatch() {
     return `<div class="list-item"><div class="veh-head"><span class="veh-dot" style="background:${esc(v.color)}"></span><strong>${esc(v.name)}</strong></div>${info}</div>`;
   }).join('');
 
-  const latest = [...S.requests].sort((a, b) => b.created_at - a.created_at).slice(0, 6);
+  const latest = [...shown].sort((a, b) => b.created_at - a.created_at).slice(0, 6);
   $('#feed').innerHTML = latest.map((r) => `<div class="list-item"><strong>${esc(r.member_name)}</strong> แจ้งรับ #${r.id} <span class="muted">${timeText(r.created_at)}</span><br>
       พิกัด ${coordLink(r.lat, r.lng)}<br>
       <strong>${num(r.bags.length)} ถุง · ${num(r.total_count)} ชิ้น</strong> ${itemsText(r.items)}<br>
@@ -417,6 +416,11 @@ function renderDispatch() {
   $('#factory-list').innerHTML = (plan.factory_kg || []).map((f) =>
     `<div class="list-item">${esc(f.name)}<br><span class="muted">ประมาณ ${num(f.kg, 1)} กก.</span></div>`).join('')
     + '<p class="muted" style="margin-top:.6rem">รถทุกคันกลับมาส่งที่ศูนย์คัดแยก แล้วแยกส่งโรงงานตามชนิดวัสดุ</p>';
+
+  const flagged = [...S.requests].filter((r) => r.flags.length).reverse().slice(0, 8);
+  $('#flag-list').innerHTML = flagged.length ? flagged.map((r) => `<div class="list-item"><strong>#${r.id} ${esc(r.member_name)}</strong>
+      <div class="tag-row">${r.flags.map((f) => `<span class="badge warn">${esc(S.config.flags[f] || f)}</span>`).join('')}</div></div>`).join('')
+    : '<p class="muted">ยังไม่มีกรณีที่ต้องดู</p>';
 }
 
 // ---------- คนขับรถรับของ ----------
@@ -431,15 +435,10 @@ let scanBusy = false;
 const driverBusy = () => scanFor !== null || !!document.activeElement?.closest?.('#driver-stops input');
 
 function renderDriver() {
-  const sel = $('#driver-vehicle');
-  if (sel.options.length !== S.vehicles.length) {
-    const keep = sel.value;
-    sel.innerHTML = S.vehicles.map((v) => `<option value="${v.id}">${esc(v.name)}</option>`).join('');
-    if (keep) sel.value = keep;
-  }
-  const vid = Number(sel.value);
-  const veh = S.vehicles.find((v) => v.id === vid);
-  const route = (S.plan?.routes || []).find((r) => r.vehicle_id === vid);
+  const veh = S.me.vehicle;
+  const vid = veh.id;
+  const route = S.route;
+  $('#driver-name').textContent = veh.name;
   const byId = Object.fromEntries(S.requests.map((r) => [r.id, r]));
   const stops = (route?.stops || []).map((s) => ({ ...s, r: byId[s.request_id] })).filter((s) => s.r);
   const open = stops.filter((s) => isOpen(s.r));
@@ -454,6 +453,7 @@ function renderDriver() {
   const nextId = open[0]?.r.id;
   $('#driver-stops').innerHTML = veh?.active ? stops.map((s, n) => stopCard(s, n, s.r.id === nextId)).join('') : '';
   renderDriverEnd(vid, open, onTruck);
+  renderDriverMap(veh?.active ? stops : [], nextId);
 }
 
 const thumb = (r, b) => (b.photo != null ? `<img class="bag-thumb" src="/api/requests/${r.id}/photo/${b.photo}" alt="รูปที่สมาชิกแนบ" loading="lazy">` : '');
@@ -502,10 +502,10 @@ function stopCard(s, n, isNext) {
     </div>`;
   } else {
     body = `<div class="tag-row">${tagChips(r)}</div>
-      <div class="row actions"><a class="btn ghost small" href="${mapsUrl(r.lat, r.lng)}" target="_blank" rel="noopener">${ic('nav', 15)} นำทาง</a>
+      <div class="row actions"><button type="button" class="btn ghost small" data-nav="${r.id}">${ic('nav', 15)} นำทาง</button>
       <button type="button" class="btn ${isNext ? 'primary' : 'ghost'} small" data-arrive="${r.id}">${ic('qr', 15)} ถึงจุดแล้ว สแกน QR</button></div>`;
   }
-  return `<div class="card stop ${isDone(r) ? 'done' : ''} ${isNext ? 'next' : ''}">
+  return `<div id="stop-${r.id}" class="card stop ${isDone(r) ? 'done' : ''} ${isNext ? 'next' : ''}">
     <div class="seq">${n + 1}</div>
     <div>
       ${isNext ? '<span class="badge">จุดถัดไป</span><br>' : ''}
@@ -527,7 +527,7 @@ function renderDriverEnd(vid, open, onTruck) {
       <h2>${open.length ? 'ของบนรถตอนนี้' : 'รับครบแล้ว กลับศูนย์คัดแยก'}</h2>
       <p>${num(onTruck.length)} จุด · ${num(bags)} ถุง · ${num(kg, 1)} กก.</p>
       <p class="muted">${esc(depot.name)} · พิกัด ${coordLink(depot.lat, depot.lng)}</p>
-      <div class="row actions"><a class="btn ghost small" href="${mapsUrl(depot.lat, depot.lng)}" target="_blank" rel="noopener">${ic('nav', 15)} นำทางไปศูนย์</a>
+      <div class="row actions"><button type="button" class="btn ghost small" data-nav="depot">${ic('nav', 15)} นำทางไปศูนย์</button>
         <button type="button" class="btn ${open.length ? 'ghost' : 'primary'} small" data-dropoff="${vid}" data-open="${open.length}">ส่งของที่ศูนย์แล้ว</button></div></div>`;
   }
   if (last) {
@@ -617,7 +617,7 @@ async function submitScan(value) {
   scanMsg('กำลังตรวจรหัส…');
   try {
     const pos = await driverPosition();
-    await api(`/requests/${id}/verify`, { scan: value, vehicle_id: Number($('#driver-vehicle').value), ...(pos || {}) });
+    await api(`/requests/${id}/verify`, { scan: value, ...(pos || {}) });
     stopCamera();
     scanFor = null;
     toast('ยืนยันจุดแล้ว ตรวจรับทีละถุงได้เลย');
@@ -636,7 +636,7 @@ async function collectStop(id, btn) {
   btn.disabled = true;
   try {
     const res = await api(`/requests/${id}/collect`, { bags });
-    toast(`รับแล้ว ${num(res.found)}/${num(res.bags)} ถุง สมาชิกได้รับ ${num(res.points)} แต้ม`);
+    toast(`รับแล้ว ${num(res.found)}/${num(res.bags)} ถุง สมาชิกได้รับ ${num(res.points)} แต้ม${res.flags.length ? ' · มีรายการให้ผู้ดูแลตรวจ' : ''}`);
     document.activeElement?.blur();
     await refresh();
     renderDriver();
@@ -670,20 +670,19 @@ function renderRecords() {
 
 // ---------- การสลับหน้าและเหตุการณ์ ----------
 function show(next) {
-  view = ['member', 'dispatch', 'driver', 'records'].includes(next) ? next : 'member';
-  for (const v of ['member', 'dispatch', 'driver', 'records']) $(`#view-${v}`).hidden = v !== view;
-  document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  const allowed = TABS[S.me.role].map((t) => t.id);
+  view = allowed.includes(next) ? next : allowed[0];
+  for (const el of document.querySelectorAll('main > section')) el.hidden = el.id !== `view-${view}`;
   if (view !== 'driver') { stopCamera(); scanFor = null; }
   if (location.hash.slice(1) !== view) history.replaceState(null, '', '#' + view);
-  if (S) renderAll();
+  renderAll();
   if (view === 'member' && pinMap) pinMap.invalidateSize();
   window.scrollTo(0, 0);
 }
 
-$('.tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) show(b.dataset.view); });
-window.addEventListener('hashchange', () => show(location.hash.slice(1)));
+$('#tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) show(b.dataset.view); });
+window.addEventListener('hashchange', () => { if (S) show(location.hash.slice(1)); });
 
-$('#member-select').addEventListener('change', () => { const me = currentMember(); setPin(me.lat, me.lng); renderMember(); });
 $('#photo').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; handleFiles(files); });
 const dz = $('#dropzone');
 dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('over'); });
@@ -770,10 +769,10 @@ $('#command-suggest').addEventListener('click', (e) => {
   sendCommand(e.target.textContent);
 });
 
-$('#driver-vehicle').addEventListener('change', () => { stopCamera(); scanFor = null; renderDriver(); });
 $('#driver-stops').addEventListener('click', (e) => {
   const d = (e.target.closest('button') || e.target).dataset;
-  if (d.arrive) { stopCamera(); scanFor = Number(d.arrive); renderDriver(); $('#scan-code')?.focus(); }
+  if (d.nav) openNav(d.nav === 'depot' ? 'depot' : Number(d.nav));
+  else if (d.arrive) { stopCamera(); scanFor = Number(d.arrive); renderDriver(); $('#scan-code')?.focus(); }
   else if (d.scan === 'camera') startCamera();
   else if (d.scan === 'cancel') { stopCamera(); scanFor = null; renderDriver(); }
   else if (d.collect) collectStop(Number(d.collect), e.target.closest('button'));
@@ -794,27 +793,18 @@ $('#driver-stops').addEventListener('change', (e) => {
   }
 });
 $('#driver-end').addEventListener('click', async (e) => {
+  if (e.target.closest('[data-nav]')) return openNav('depot');
   const btn = e.target.closest('[data-dropoff]');
   if (!btn) return;
   if (Number(btn.dataset.open) > 0 && !confirm('ยังมีจุดที่ยังไม่ได้รับ ต้องการส่งของที่ศูนย์ตอนนี้ใช่ไหม')) return;
   btn.disabled = true;
   try {
-    const res = await api(`/vehicles/${btn.dataset.dropoff}/dropoff`, {});
+    const res = await api('/dropoff', {});
     toast(`ส่งของแล้ว ${num(res.stops)} จุด ${num(res.bags)} ถุง รวม ${num(res.kg, 1)} กก.`);
     await refresh();
     renderDriver();
   } catch (err) { toast(err.message); btn.disabled = false; }
 });
-
-// ---------- เริ่มทำงาน ----------
-(async () => {
-  try {
-    await refresh();
-    show(location.hash.slice(1) || 'member');
-  } catch { toast('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
-  // ดึงข้อมูลใหม่เป็นระยะ เพื่อให้หน้าผู้จัดรถเห็นงานที่เพิ่งแจ้งเข้ามา
-  setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 4000);
-})();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));

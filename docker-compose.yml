@@ -6,6 +6,9 @@ services:
     environment:
       # ใส่ค่าในไฟล์ .env (ดู .env.example) ถ้าไม่ใส่ ระบบจะใช้ผลแยกขยะแบบจำลอง
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # บัญชีตัวอย่าง: รหัสผ่านร่วมของทุกบัญชี และเปิดหรือปิดปุ่ม quick login (ตั้งเป็น 0 เพื่อปิด)
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-demo1234}
+      DEMO_QUICK_LOGIN: ${DEMO_QUICK_LOGIN:-1}
     volumes:
       - data:/data
       # แก้โค้ดแล้วเห็นผลทันทีโดยไม่ต้อง build ใหม่
