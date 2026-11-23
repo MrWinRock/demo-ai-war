@@ -6,7 +6,7 @@ import threading
 DB_PATH = os.environ.get("DB_PATH", "/data/app.db")
 
 # เพิ่มเลขนี้เมื่อแก้ SCHEMA หรือข้อมูลตัวอย่าง ระบบจะล้างฐานข้อมูลเดิมแล้วสร้างใหม่ตอนเริ่มทำงาน
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -24,17 +24,18 @@ CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT, member_id INTEGER NOT NULL,
     lat REAL NOT NULL, lng REAL NOT NULL,
     slot TEXT NOT NULL, window_start INTEGER NOT NULL, window_end INTEGER NOT NULL,
-    items TEXT NOT NULL,       -- JSON: รายการที่ AI เห็นในรูป
+    bags TEXT NOT NULL,        -- JSON: ถุงแต่ละใบ พร้อมป้าย รายการของข้างใน และผลตรวจรับ
+    items TEXT NOT NULL,       -- JSON: รายการรวมทุกถุง
     materials TEXT NOT NULL,   -- JSON: [{material, share}]
-    size TEXT NOT NULL, volume INTEGER NOT NULL,  -- พื้นที่บนรถที่ใช้ ตามขนาดกอง
+    volume INTEGER NOT NULL,   -- พื้นที่บนรถที่ใช้ รวมจากขนาดของทุกถุง
     est_kg REAL NOT NULL, est_value REAL NOT NULL,
     -- pending = รอรับ, verified = คนขับสแกน QR ยืนยันจุดแล้ว, collected = รับของแล้ว, delivered = ส่งถึงศูนย์คัดแยกแล้ว
     status TEXT NOT NULL DEFAULT 'pending',
     code TEXT NOT NULL,              -- รหัสใน QR ของสมาชิก ใช้ยืนยันว่าคนขับมาถูกจุด
     vehicle_id INTEGER,              -- รถที่มารับ
     verified_at REAL, verify_distance_m REAL, collected_at REAL, delivered_at REAL,
-    actual_items TEXT,               -- JSON: จำนวนที่คนขับนับได้จริง
-    photo TEXT NOT NULL DEFAULT '',  -- รูปย่อ (data URL) เก็บเป็นหลักฐาน
+    actual_items TEXT,               -- JSON: รายการรวมของถุงที่คนขับพบจริง
+    photos TEXT NOT NULL DEFAULT '[]',  -- JSON: รูปย่อ (data URL) ที่สมาชิกแนบ ถุงแต่ละใบอ้างรูปด้วยลำดับ
     actual_kg REAL, note TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);

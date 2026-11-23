@@ -4,8 +4,8 @@ import random
 import time
 
 from . import db
-from .config import CODE_ALPHABET, SIZES, SLOTS, VEHICLE_COLORS
-from .estimate import estimate
+from .config import BAG_TAGS, CODE_ALPHABET, SIZES, SLOTS, VEHICLE_COLORS
+from .estimate import aggregate_items, estimate
 
 NAMES = [
     "คุณสมชาย", "คุณวิภา", "คุณอนันต์", "คุณมาลี", "คุณประเสริฐ", "คุณสุดา", "คุณธนา", "คุณนภา",
@@ -51,12 +51,22 @@ def run() -> None:
         slot = rnd.choice(SLOTS)
         size = rnd.choices(["S", "M", "L"], weights=[4, 4, 1])[0]
         units = SIZES[size]["units"]
-        items = [{"name_th": a, "material": b, "count": c * units, "prep_tip_th": ""} for a, b, c in rnd.choice(BUNDLES)]
+        # วัสดุแต่ละชนิดในชุดเป็นถุงของตัวเอง เหมือนบ้านที่แยกไว้แล้ว
+        bags = []
+        for k, (name, material, count) in enumerate(rnd.choice(BUNDLES)):
+            items = [{"name_th": name, "material": material, "count": count * units, "prep_tip_th": ""}]
+            est = estimate(items)
+            bags.append({
+                "tag": BAG_TAGS[k], "name_th": f"ถุง{name}", "position_th": "", "kind": "bag", "mixed": False,
+                "size": size, "count_method": "exact", "partial_view": False, "photo": None, "items": items,
+                "est_kg": est["est_kg"], "est_value": est["est_value"], "found": None, "actual_kg": None, "mismatch": False,
+            })
+        items = aggregate_items(bags)
         est = estimate(items)
         db.execute(
-            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume, est_kg, est_value, code, created_at)"
+            "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, bags, items, materials, volume, est_kg, est_value, code, created_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (m["id"], m["lat"], m["lng"], slot["id"], slot["start"], slot["end"], json.dumps(items, ensure_ascii=False),
-             json.dumps(est["materials"]), size, units, est["est_kg"], est["est_value"],
+            (m["id"], m["lat"], m["lng"], slot["id"], slot["start"], slot["end"], json.dumps(bags, ensure_ascii=False),
+             json.dumps(items, ensure_ascii=False), json.dumps(est["materials"]), units, est["est_kg"], est["est_value"],
              "".join(code_rnd.choice(CODE_ALPHABET) for _ in range(6)), now + n),
         )

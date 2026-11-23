@@ -1,5 +1,5 @@
 // Service worker: เก็บหน้าแอปไว้เปิดได้แม้เน็ตหลุด ส่วน /api ไปที่เซิร์ฟเวอร์เสมอ
-const CACHE = 'recycle-shell-v1';
+const CACHE = 'recycle-shell-v2';
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

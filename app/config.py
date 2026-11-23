@@ -49,3 +49,6 @@ POINTS_PER_KG = 10
 # ตัวอักษรของรหัสรับของ ตัดตัวที่อ่านสับสนออก (0/O, 1/I)
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 QR_PREFIX = "YAEKTOOK"
+
+# ป้ายของถุงในหนึ่งคำขอ ถุงใบแรกคือ A (ข้ามตัว I ที่อ่านสับสนกับเลข 1) จึงรับได้สูงสุด 12 ถุงต่อคำขอ
+BAG_TAGS = "ABCDEFGHJKLM"

@@ -4,54 +4,102 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>แยกถูก รับถึงบ้าน</title>
-  <meta name="theme-color" content="#15803d">
+  <meta name="theme-color" content="#065f46">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="logo" aria-hidden="true"></span>แยกถูก รับถึงบ้าน</div>
+    <a class="brand" href="#member" aria-label="แยกถูก รับถึงบ้าน หน้าแรก">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#10b981"/><path d="M10.2 20.6A7 7 0 0 1 16 9m0 0-2.6-2.2M16 9l-2.2 2.6M21.8 11.4A7 7 0 0 1 16 23m0 0 2.6 2.2M16 23l2.2-2.6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>แยกถูก <b>รับถึงบ้าน</b></span>
+    </a>
+    <nav class="tabs" aria-label="เลือกหน้า">
+      <button data-view="member" class="active" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-4 4-5.5 7-5.5s6 1.5 7 5.5"/></svg><span>สมาชิก</span>
+      </button>
+      <button data-view="dispatch" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 7v12l5-2 6 2 5-2V5l-5 2z"/><path d="M9 5v12M15 7v12"/></svg><span>ผู้จัดรถ</span>
+      </button>
+      <button data-view="driver" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="17.5" cy="17.5" r="1.8"/></svg><span>คนขับ</span>
+      </button>
+      <button data-view="records" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h11M8 12h11M8 17h11M4.5 7h.01M4.5 12h.01M4.5 17h.01"/></svg><span>บันทึก</span>
+      </button>
+    </nav>
     <span id="ai-badge" class="badge"></span>
   </header>
 
   <main>
     <!-- สมาชิก -->
     <section id="view-member" class="view narrow">
+      <div class="hero">
+        <div class="hero-text">
+          <p class="eyebrow">สมาชิก</p>
+          <h1 id="member-hello">สวัสดี</h1>
+          <div class="member-pick">
+            <select id="member-select" aria-label="เปลี่ยนสมาชิก"></select>
+          </div>
+        </div>
+        <div class="points" aria-label="แต้มสะสม"><b id="member-points">0</b><small>แต้ม</small></div>
+      </div>
+
       <div class="card">
-        <label class="field">สมาชิก
-          <select id="member-select"></select>
+        <div class="card-head">
+          <span class="step">1</span>
+          <div>
+            <h2>ถ่ายรูปถุงที่จะให้มารับ</h2>
+            <p class="muted">ถ่ายทีละถุง หรือถ่ายหลายถังในรูปเดียวก็ได้ AI จะนับถุง แยกชนิด และนับชิ้นให้</p>
+          </div>
+        </div>
+        <label class="dropzone" for="photo" id="dropzone">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          <strong>แตะเพื่อถ่ายหรือเลือกรูป</strong>
+          <span>เลือกได้หลายรูปพร้อมกัน</span>
         </label>
-        <p class="muted">แต้มสะสม <strong id="member-points">0</strong> แต้ม</p>
+        <input id="photo" type="file" accept="image/*" multiple hidden>
+        <ul class="tips" aria-label="วิธีถ่ายให้นับได้แม่น">
+          <li>ถ่ายจากด้านบน</li><li>ให้เห็นทั้งถุง</li><li>แสงสว่างพอ</li>
+        </ul>
+        <div id="photo-notes"></div>
+        <div id="bags"></div>
+        <div id="bag-totals"></div>
       </div>
 
       <div class="card">
-        <h2><span class="step">1</span>แนบรูปของที่จะให้มารับ</h2>
-        <label class="btn primary block" for="photo">เลือกรูปจากเครื่อง</label>
-        <input id="photo" type="file" accept="image/*" hidden>
-        <div id="photo-preview" class="preview" hidden></div>
-        <div id="ai-result"></div>
-      </div>
-
-      <div class="card">
-        <h2><span class="step">2</span>ปักหมุดจุดรับ</h2>
+        <div class="card-head">
+          <span class="step">2</span>
+          <div>
+            <h2>ปักหมุดจุดรับ</h2>
+            <p class="muted">ลากหมุดหรือแตะแผนที่เพื่อย้าย</p>
+          </div>
+        </div>
         <div id="pinmap" class="map small"></div>
-        <p class="muted">ลากหมุดหรือแตะแผนที่เพื่อย้าย พิกัด <strong id="pin-coords">–</strong></p>
-        <button id="use-gps" class="btn ghost" type="button">ใช้ตำแหน่งปัจจุบัน</button>
+        <div class="row between">
+          <span class="muted">พิกัด <strong id="pin-coords" class="coords">–</strong></span>
+          <button id="use-gps" class="btn ghost small" type="button">ใช้ตำแหน่งปัจจุบัน</button>
+        </div>
       </div>
 
       <div class="card">
-        <h2><span class="step">3</span>เลือกช่วงเวลา</h2>
-        <div id="slot-chips" class="chips"></div>
-        <button id="submit-request" class="btn primary block" type="button" disabled>แจ้งให้มารับ</button>
-        <div id="submit-result"></div>
+        <div class="card-head">
+          <span class="step">3</span>
+          <div><h2>เลือกช่วงเวลา</h2></div>
+        </div>
+        <div id="slot-chips" class="slots"></div>
+        <button id="submit-request" class="btn primary block lg" type="button" disabled>แจ้งให้มารับ</button>
       </div>
 
-      <div class="card">
-        <h2>คำขอของฉัน</h2>
-        <div id="my-requests"></div>
-      </div>
+      <div id="submit-result"></div>
+
+      <h2 class="section-title">คำขอของฉัน</h2>
+      <div id="my-requests"></div>
     </section>
 
     <!-- ผู้จัดรถ -->
@@ -60,20 +108,25 @@
         <div id="dispatch-map" class="map big"></div>
         <aside class="side">
           <div class="card">
-            <div id="plan-stats" class="stats"></div>
+            <div id="plan-stats" class="stat-grid"></div>
             <p id="plan-summary" class="muted"></p>
             <div class="row">
               <button id="replan" class="btn primary" type="button">จัดเส้นทางใหม่</button>
               <button id="reset" class="btn ghost" type="button">รีเซ็ตข้อมูลตัวอย่าง</button>
             </div>
           </div>
-          <div class="card">
-            <h2>สั่งด้วยภาษาพูด</h2>
-            <form id="command-form" class="row">
-              <input id="command-text" type="text" placeholder="เช่น รถคัน 2 เสีย" autocomplete="off">
+          <div class="card ai-card">
+            <h2><span class="badge ai">AI</span> สั่งด้วยภาษาพูด</h2>
+            <form id="command-form" class="command">
+              <input id="command-text" type="text" placeholder="เช่น คนขับรถคันที่สองลาป่วย" autocomplete="off" aria-label="คำสั่งถึงระบบจัดรถ">
               <button class="btn primary" type="submit">ส่ง</button>
             </form>
-            <p id="command-reply" class="muted"></p>
+            <div class="suggest" id="command-suggest">
+              <button type="button">รถคัน 2 เสีย</button>
+              <button type="button">รถคัน 2 กลับมาแล้ว</button>
+              <button type="button">จัดเส้นทางใหม่</button>
+            </div>
+            <p id="command-reply" class="reply" role="status"></p>
           </div>
           <div class="card">
             <h2>รถ</h2>
@@ -93,12 +146,15 @@
 
     <!-- คนขับรถรับของ -->
     <section id="view-driver" class="view narrow" hidden>
-      <div class="card">
-        <label class="field">รถ
-          <select id="driver-vehicle"></select>
-        </label>
-        <p id="driver-summary" class="muted"></p>
-        <div class="progress" aria-hidden="true"><span id="driver-progress"></span></div>
+      <div class="hero driver">
+        <div class="hero-text">
+          <p class="eyebrow">คนขับรถรับของ</p>
+          <label class="member-pick">รถ
+            <select id="driver-vehicle" aria-label="เลือกรถ"></select>
+          </label>
+          <p id="driver-summary" class="hero-sub"></p>
+          <div class="progress" aria-hidden="true"><span id="driver-progress"></span></div>
+        </div>
       </div>
       <div id="driver-stops"></div>
       <div id="driver-end"></div>
@@ -109,22 +165,15 @@
       <div class="card">
         <div class="row between">
           <h2>บันทึกการแจ้งรับ</h2>
-          <a class="btn ghost" href="/api/records.csv">ดาวน์โหลด CSV</a>
+          <a class="btn ghost small" href="/api/records.csv">ดาวน์โหลด CSV</a>
         </div>
-        <div id="records-totals" class="stats"></div>
+        <div id="records-totals" class="stat-grid"></div>
         <div class="table-wrap">
           <table id="records-table"></table>
         </div>
       </div>
     </section>
   </main>
-
-  <nav class="tabs">
-    <button data-view="member" class="active" type="button">สมาชิก</button>
-    <button data-view="dispatch" type="button">ผู้จัดรถ</button>
-    <button data-view="driver" type="button">คนขับ</button>
-    <button data-view="records" type="button">บันทึก</button>
-  </nav>
 
   <div id="toast" role="status"></div>
 

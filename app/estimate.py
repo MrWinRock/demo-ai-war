@@ -18,3 +18,15 @@ def estimate(items: list[dict]) -> dict:
     materials = [{"material": k, "share": round(v / total, 3)} for k, v in kg_by_material.items()]
     value = sum(v * MATERIALS[k]["price"] for k, v in kg_by_material.items())
     return {"materials": materials, "est_kg": round(total, 2), "est_value": round(value, 1)}
+
+
+def aggregate_items(bags: list[dict]) -> list[dict]:
+    """รวมรายการของทุกถุงเป็นรายการเดียวต่อชื่อและวัสดุ ใช้แสดงยอดรวมของคำขอ"""
+    merged: dict[tuple[str, str], dict] = {}
+    for b in bags:
+        for i in b["items"]:
+            key = (i["name_th"], i["material"])
+            if key not in merged:
+                merged[key] = {"name_th": i["name_th"], "material": i["material"], "count": 0, "prep_tip_th": i.get("prep_tip_th", "")}
+            merged[key]["count"] += max(0, int(i.get("count") or 0))
+    return list(merged.values())

@@ -18,8 +18,8 @@ from pydantic import BaseModel
 import segno
 
 from . import ai, db, routing, seed
-from .config import CODE_ALPHABET, DEPOT, FACTORIES, MATERIALS, POINTS_PER_KG, QR_PREFIX, SIZES, SLOT_BY_ID, SLOTS
-from .estimate import estimate
+from .config import BAG_TAGS, CODE_ALPHABET, DEPOT, FACTORIES, MATERIALS, POINTS_PER_KG, QR_PREFIX, SIZES, SLOT_BY_ID, SLOTS
+from .estimate import aggregate_items, estimate
 
 BASE = Path(__file__).resolve().parent.parent
 BKK = timezone(timedelta(hours=7))
@@ -48,18 +48,24 @@ def reseed() -> None:
 
 def load_requests(where: str = "", params: tuple = ()) -> list[dict]:
     rows = db.query(
-        "SELECT r.id, r.member_id, r.lat, r.lng, r.slot, r.window_start, r.window_end, r.items, r.materials, r.size,"
-        " r.volume, r.est_kg, r.est_value, r.status, r.actual_kg, r.note, r.created_at, (r.photo != '') AS has_photo,"
+        "SELECT r.id, r.member_id, r.lat, r.lng, r.slot, r.window_start, r.window_end, r.bags, r.items, r.materials,"
+        " r.volume, r.est_kg, r.est_value, r.status, r.actual_kg, r.note, r.created_at,"
+        " json_array_length(r.photos) AS n_photos,"
         " r.vehicle_id, r.verified_at, r.verify_distance_m, r.collected_at, r.delivered_at, r.actual_items,"
         f" m.name AS member_name, m.address FROM requests r JOIN members m ON m.id = r.member_id {where} ORDER BY r.id",
         params,
     )
     for r in rows:
+        r["bags"] = json.loads(r["bags"])
         r["items"] = json.loads(r["items"])
         r["materials"] = json.loads(r["materials"])
         r["actual_items"] = json.loads(r["actual_items"]) if r["actual_items"] else None
-        r["total_count"] = sum(int(i.get("count") or 0) for i in r["items"] if i.get("material") != "non_recyclable")
+        r["total_count"] = count_pieces(r["items"])
     return rows
+
+
+def count_pieces(items: list[dict]) -> int:
+    return sum(int(i.get("count") or 0) for i in items if i.get("material") != "non_recyclable")
 
 
 def compute_plan() -> dict:
@@ -130,14 +136,25 @@ class ItemIn(BaseModel):
     prep_tip_th: str = ""
 
 
+class BagIn(BaseModel):
+    name_th: str
+    position_th: str = ""
+    kind: str = "bag"
+    mixed: bool = False
+    size: str = "S"
+    count_method: str = "exact"
+    partial_view: bool = False
+    photo: int | None = None      # ลำดับของรูปใน photos ที่ถุงนี้อยู่
+    items: list[ItemIn]
+
+
 class RequestIn(BaseModel):
     member_id: int
     lat: float
     lng: float
     slot: str
-    size: str
-    items: list[ItemIn]
-    photo: str = ""
+    bags: list[BagIn]
+    photos: list[str] = []
     note: str = ""
 
 
@@ -148,9 +165,15 @@ class VerifyIn(BaseModel):
     lng: float | None = None
 
 
+class BagCheck(BaseModel):
+    tag: str
+    found: bool = True
+    kg: float = 0
+    mismatch: bool = False        # ของในถุงไม่ตรงกับที่แจ้ง
+
+
 class CollectIn(BaseModel):
-    actual_kg: float
-    items: list[ItemIn] | None = None   # จำนวนที่คนขับนับได้จริง
+    bags: list[BagCheck]          # ผลตรวจรับของทุกถุงในคำขอ
 
 
 class CommandIn(BaseModel):
@@ -182,31 +205,53 @@ def classify(body: ClassifyIn):
     except Exception:
         raise HTTPException(400, "ข้อมูลรูปไม่ถูกต้อง")
     result = ai.classify(body.image_b64, body.media_type)
-    result["estimate"] = estimate(result["items"])
+    for c in result["containers"]:
+        c["estimate"] = estimate(c["items"])
     return result
 
 
 @app.post("/api/requests")
 def create_request(body: RequestIn):
-    if body.slot not in SLOT_BY_ID or body.size not in SIZES:
-        raise HTTPException(400, "ช่วงเวลาหรือขนาดกองไม่ถูกต้อง")
+    if body.slot not in SLOT_BY_ID:
+        raise HTTPException(400, "ช่วงเวลาไม่ถูกต้อง")
     if not db.query("SELECT 1 FROM members WHERE id = ?", (body.member_id,)):
         raise HTTPException(404, "ไม่พบสมาชิก")
     if not (-90 <= body.lat <= 90 and -180 <= body.lng <= 180):
         raise HTTPException(400, "พิกัดไม่ถูกต้อง")
-    photo = body.photo if body.photo.startswith("data:image/jpeg;base64,") and len(body.photo) < 300_000 else ""
-    items = [i.model_dump() for i in body.items if i.material in MATERIALS]
+    photos = [p for p in body.photos[:6] if p.startswith("data:image/jpeg;base64,") and len(p) < 300_000]
+
+    # เก็บเฉพาะถุงที่มีของรับได้ แล้วติดป้าย A, B, C ตามลำดับ
+    bags = []
+    for b in body.bags:
+        if b.size not in SIZES:
+            raise HTTPException(400, "ขนาดถุงไม่ถูกต้อง")
+        items = [i.model_dump() for i in b.items if i.material in MATERIALS and i.count > 0]
+        est = estimate(items)
+        if est["est_kg"] <= 0:
+            continue
+        bags.append({
+            "tag": "", "name_th": b.name_th[:60], "position_th": b.position_th[:40], "kind": b.kind, "mixed": b.mixed,
+            "size": b.size, "count_method": b.count_method, "partial_view": b.partial_view,
+            "photo": b.photo if b.photo is not None and 0 <= b.photo < len(photos) else None, "items": items,
+            "est_kg": est["est_kg"], "est_value": est["est_value"], "found": None, "actual_kg": None, "mismatch": False,
+        })
+    if not bags:
+        raise HTTPException(400, "ไม่มีถุงที่มีของรับได้ในคำขอนี้")
+    if len(bags) > len(BAG_TAGS):
+        raise HTTPException(400, f"รับได้ไม่เกิน {len(BAG_TAGS)} ถุงต่อคำขอ")
+    for k, b in enumerate(bags):
+        b["tag"] = BAG_TAGS[k]
+
+    items = aggregate_items(bags)
     est = estimate(items)
-    if est["est_kg"] <= 0:
-        raise HTTPException(400, "ไม่มีรายการที่รับได้ในคำขอนี้")
     slot = SLOT_BY_ID[body.slot]
     rid = db.execute(
-        "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, items, materials, size, volume,"
-        " est_kg, est_value, photo, note, code, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO requests(member_id, lat, lng, slot, window_start, window_end, bags, items, materials, volume,"
+        " est_kg, est_value, photos, note, code, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (body.member_id, round(body.lat, 6), round(body.lng, 6), slot["id"], slot["start"], slot["end"],
-         json.dumps(items, ensure_ascii=False), json.dumps(est["materials"]), body.size, SIZES[body.size]["units"],
-         est["est_kg"],
-         est["est_value"], photo, body.note[:200], "".join(secrets.choice(CODE_ALPHABET) for _ in range(6)), time.time()),
+         json.dumps(bags, ensure_ascii=False), json.dumps(items, ensure_ascii=False), json.dumps(est["materials"]),
+         sum(SIZES[b["size"]]["units"] for b in bags), est["est_kg"], est["est_value"], json.dumps(photos),
+         body.note[:200], "".join(secrets.choice(CODE_ALPHABET) for _ in range(6)), time.time()),
     )
     plan = compute_plan()  # มีงานใหม่เข้ามา จัดเส้นทางใหม่ทันที
     stop = next(
@@ -217,12 +262,13 @@ def create_request(body: RequestIn):
     return {"request": load_requests("WHERE r.id = ?", (rid,))[0], "stop": stop}
 
 
-@app.get("/api/requests/{rid}/photo")
-def request_photo(rid: int):
-    rows = db.query("SELECT photo FROM requests WHERE id = ?", (rid,))
-    if not rows or not rows[0]["photo"]:
+@app.get("/api/requests/{rid}/photo/{index}")
+def request_photo(rid: int, index: int):
+    rows = db.query("SELECT photos FROM requests WHERE id = ?", (rid,))
+    photos = json.loads(rows[0]["photos"]) if rows else []
+    if not 0 <= index < len(photos):
         raise HTTPException(404, "ไม่มีรูป")
-    return Response(base64.b64decode(rows[0]["photo"].split(",", 1)[1]), media_type="image/jpeg")
+    return Response(base64.b64decode(photos[index].split(",", 1)[1]), media_type="image/jpeg")
 
 
 @app.get("/api/requests/{rid}/ticket")
@@ -277,7 +323,7 @@ def verify(rid: int, body: VerifyIn):
 
 @app.post("/api/requests/{rid}/collect")
 def collect(rid: int, body: CollectIn):
-    """คนขับตรวจของและบันทึกน้ำหนักจริง ทำได้หลังยืนยันจุดด้วย QR แล้วเท่านั้น"""
+    """คนขับตรวจรับทีละถุงตามป้าย และบันทึกน้ำหนักจริง ทำได้หลังยืนยันจุดด้วย QR แล้วเท่านั้น"""
     rows = db.query("SELECT * FROM requests WHERE id = ?", (rid,))
     if not rows:
         raise HTTPException(404, "ไม่พบคำขอ")
@@ -286,16 +332,28 @@ def collect(rid: int, body: CollectIn):
         raise HTTPException(409, "คำขอนี้รับไปแล้ว")
     if req["status"] != "verified":
         raise HTTPException(409, "ต้องสแกน QR ของลูกค้าเพื่อยืนยันจุดก่อน")
-    if not 0 < body.actual_kg <= 500:
-        raise HTTPException(400, "น้ำหนักต้องมากกว่า 0 และไม่เกิน 500 กก.")
-    actual = [i.model_dump() for i in body.items if i.material in MATERIALS] if body.items is not None else None
-    points = round(body.actual_kg * POINTS_PER_KG)
+
+    bags = json.loads(req["bags"])
+    checks = {c.tag: c for c in body.bags}
+    if set(checks) != {b["tag"] for b in bags}:
+        raise HTTPException(400, "ต้องตรวจให้ครบทุกถุงตามป้ายที่แจ้งไว้")
+    for b in bags:
+        c = checks[b["tag"]]
+        if c.found and not 0 < c.kg <= 200:
+            raise HTTPException(400, f"ถุง {b['tag']}: น้ำหนักต้องมากกว่า 0 และไม่เกิน 200 กก.")
+        b.update(found=c.found, actual_kg=round(c.kg, 2) if c.found else 0, mismatch=bool(c.found and c.mismatch))
+    found = [b for b in bags if b["found"]]
+    if not found:
+        raise HTTPException(400, "ต้องพบอย่างน้อย 1 ถุง ถ้าไม่พบของเลยให้แจ้งผู้จัดรถ")
+
+    actual_kg = round(sum(b["actual_kg"] for b in found), 2)
+    points = round(actual_kg * POINTS_PER_KG)
     db.execute(
-        "UPDATE requests SET status = 'collected', actual_kg = ?, actual_items = ?, collected_at = ? WHERE id = ?",
-        (body.actual_kg, json.dumps(actual, ensure_ascii=False) if actual is not None else None, time.time(), rid),
+        "UPDATE requests SET status = 'collected', bags = ?, actual_kg = ?, actual_items = ?, collected_at = ? WHERE id = ?",
+        (json.dumps(bags, ensure_ascii=False), actual_kg, json.dumps(aggregate_items(found), ensure_ascii=False), time.time(), rid),
     )
     db.execute("UPDATE members SET points = points + ? WHERE id = ?", (points, req["member_id"]))
-    return {"ok": True, "points": points}
+    return {"ok": True, "points": points, "actual_kg": actual_kg, "found": len(found), "bags": len(bags)}
 
 
 @app.post("/api/vehicles/{vid}/dropoff")
@@ -308,17 +366,18 @@ def dropoff(vid: int):
     if not loads:
         raise HTTPException(409, "ไม่มีของบนรถที่ต้องส่ง")
     kg_by_type: dict[str, float] = {}
-    for r in loads:
-        for m in r["materials"]:
+    found = [b for r in loads for b in r["bags"] if b["found"]]
+    for b in found:  # แบ่งน้ำหนักจริงของแต่ละถุงตามสัดส่วนวัสดุในถุงนั้น
+        for m in estimate(b["items"])["materials"]:
             ftype = MATERIALS[m["material"]]["factory"]
             if ftype:
-                kg_by_type[ftype] = kg_by_type.get(ftype, 0) + m["share"] * r["actual_kg"]
+                kg_by_type[ftype] = kg_by_type.get(ftype, 0) + m["share"] * b["actual_kg"]
     now = time.time()
     db.execute("UPDATE requests SET status = 'delivered', delivered_at = ? WHERE status = 'collected' AND vehicle_id = ?", (now, vid))
     summary = {
-        "vehicle_id": vid, "vehicle": veh[0]["name"], "at": now, "stops": len(loads),
+        "vehicle_id": vid, "vehicle": veh[0]["name"], "at": now, "stops": len(loads), "bags": len(found),
         "kg": round(sum(r["actual_kg"] for r in loads), 1),
-        "pieces": sum(sum(int(i.get("count") or 0) for i in (r["actual_items"] or r["items"]) if i.get("material") != "non_recyclable") for r in loads),
+        "pieces": sum(count_pieces(b["items"]) for b in found),
         "factories": [
             {"name": f["name"], "kg": round(sum(kg_by_type.get(t, 0) for t in f["accepts"]), 1)} for f in FACTORIES
         ],
@@ -374,17 +433,21 @@ def records_csv():
     vehicles = {v["id"]: v["name"] for v in db.query("SELECT id, name FROM vehicles")}
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["เลขที่", "เวลาแจ้ง", "สมาชิก", "ละติจูด", "ลองจิจูด", "ช่วงเวลานัด", "รายการ (ชิ้น)", "จำนวนรวม (ชิ้น)",
-                "ขนาดกอง", "พื้นที่บนรถ (ถุง)", "น้ำหนักประมาณ (กก.)", "มูลค่าประมาณ (บาท)", "สถานะ", "รถที่รับ",
-                "เวลายืนยันจุด", "ระยะจากหมุดตอนสแกน (ม.)", "เวลารับของ", "จำนวนที่รับจริง (ชิ้น)", "น้ำหนักจริง (กก.)", "เวลาส่งถึงศูนย์"])
+    w.writerow(["เลขที่", "เวลาแจ้ง", "สมาชิก", "ละติจูด", "ลองจิจูด", "ช่วงเวลานัด", "จำนวนถุง", "ป้ายถุง", "รายการ (ชิ้น)",
+                "จำนวนรวม (ชิ้น)", "พื้นที่บนรถ (ถุง)", "น้ำหนักประมาณ (กก.)", "มูลค่าประมาณ (บาท)", "สถานะ", "รถที่รับ",
+                "เวลายืนยันจุด", "ระยะจากหมุดตอนสแกน (ม.)", "เวลารับของ", "ถุงที่พบ", "ถุงที่ของไม่ตรง", "น้ำหนักจริง (กก.)",
+                "เวลาส่งถึงศูนย์"])
     for r in load_requests():
         items = "; ".join(f'{i["name_th"]} x{i.get("count", 0)}' for i in r["items"])
-        actual = sum(int(i.get("count") or 0) for i in r["actual_items"]) if r["actual_items"] else ""
-        w.writerow([r["id"], fmt_time(r["created_at"]), r["member_name"], r["lat"], r["lng"], SLOT_BY_ID[r["slot"]]["label"], items,
-                    r["total_count"], r["size"], r["volume"], r["est_kg"], r["est_value"], STATUS_LABEL[r["status"]],
-                    vehicles.get(r["vehicle_id"], ""), fmt_time(r["verified_at"]),
+        tags = " ".join(f'{r["id"]}-{b["tag"]}' for b in r["bags"])
+        checked = r["status"] in ("collected", "delivered")
+        w.writerow([r["id"], fmt_time(r["created_at"]), r["member_name"], r["lat"], r["lng"], SLOT_BY_ID[r["slot"]]["label"],
+                    len(r["bags"]), tags, items, r["total_count"], r["volume"], r["est_kg"], r["est_value"],
+                    STATUS_LABEL[r["status"]], vehicles.get(r["vehicle_id"], ""), fmt_time(r["verified_at"]),
                     r["verify_distance_m"] if r["verify_distance_m"] is not None else "", fmt_time(r["collected_at"]),
-                    actual, r["actual_kg"] or "", fmt_time(r["delivered_at"])])
+                    sum(1 for b in r["bags"] if b["found"]) if checked else "",
+                    " ".join(b["tag"] for b in r["bags"] if b["mismatch"]) if checked else "",
+                    r["actual_kg"] or "", fmt_time(r["delivered_at"])])
     # ใส่ BOM ให้ Excel อ่านภาษาไทยได้ถูกต้อง
     return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="pickup-records.csv"'})

@@ -62,67 +62,107 @@ def _ask(system: str, content: list | str, schema: dict) -> dict:
     return json.loads(text)
 
 
-# ---------- 1) แยกและนับขยะจากรูป ----------
+# ---------- 1) นับถุง แยกชนิด และนับชิ้นจากรูป ----------
+# หนึ่งรูปอาจมีหลายภาชนะ (เช่น ถังแยก 4 ใบ) AI จึงตอบเป็นรายการ "ภาชนะ" แต่ละใบมีรายการของข้างใน
+# แต่ละภาชนะจะกลายเป็นถุงหนึ่งใบในคำขอ มีป้ายของตัวเอง และคนขับตรวจรับทีละใบ
 
 CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
-        "items": {
+        "containers": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
                     "name_th": {"type": "string"},
-                    "material": {"type": "string", "enum": list(MATERIALS.keys())},
-                    "count": {"type": "integer"},
-                    "prep_tip_th": {"type": "string"},
+                    "position_th": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["bag", "bin", "box", "pile"]},
+                    "mixed": {"type": "boolean"},
+                    "size": {"type": "string", "enum": ["S", "M", "L"]},
+                    "count_method": {"type": "string", "enum": ["exact", "estimate"]},
+                    "partial_view": {"type": "boolean"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name_th": {"type": "string"},
+                                "material": {"type": "string", "enum": list(MATERIALS.keys())},
+                                "count": {"type": "integer"},
+                                "prep_tip_th": {"type": "string"},
+                            },
+                            "required": ["name_th", "material", "count", "prep_tip_th"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
-                "required": ["name_th", "material", "count", "prep_tip_th"],
+                "required": ["name_th", "position_th", "kind", "mixed", "size", "count_method", "partial_view", "items"],
                 "additionalProperties": False,
             },
         },
-        "size": {"type": "string", "enum": ["S", "M", "L"]},
         "summary_th": {"type": "string"},
+        "photo_tip_th": {"type": "string"},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
     },
-    "required": ["items", "size", "summary_th", "confidence"],
+    "required": ["containers", "summary_th", "photo_tip_th", "confidence"],
     "additionalProperties": False,
 }
 
-CLASSIFY_SYSTEM = """คุณช่วยสมาชิกบริการรับขยะรีไซเคิลถึงบ้านในกรุงเทพฯ ผู้ใช้แนบรูปกองของที่อยากให้มารับ \
-ผลของคุณจะถูกใช้กรอกคำขอรับอัตโนมัติ และใช้จัดรถกับเลือกโรงงานปลายทาง จึงต้องตรงกับสิ่งที่เห็นในรูปจริง
+CLASSIFY_SYSTEM = """คุณช่วยสมาชิกบริการรับขยะรีไซเคิลถึงบ้านในกรุงเทพฯ สมาชิกถ่ายรูปของที่อยากให้มารับด้วยมือถือ \
+ผลของคุณจะถูกใช้กรอกคำขอรับอัตโนมัติ ใช้จัดรถ ใช้เลือกโรงงานปลายทาง และคนขับจะใช้ตรวจรับทีละถุง จึงต้องตรงกับสิ่งที่เห็นในรูปจริง
 
-สิ่งที่ต้องทำ:
-- แจกแจงของในรูปเป็นรายการ โดยรวมของชนิดเดียวกันไว้ในรายการเดียว แล้วนับจำนวนชิ้นที่มองเห็นใส่ใน count \
-ถ้าของซ้อนหรือบังกันจนนับไม่ครบ ให้นับเท่าที่ประเมินได้อย่างสมเหตุสมผล และตั้ง confidence เป็น low หรือ medium
+คนทั่วไปถ่ายรูปแบบนี้ ซึ่งคุณต้องรับมือได้ทั้งหมด:
+- ถุงใบเดียวที่อัดของชนิดเดียวไว้แน่น เช่น ขวดน้ำซ้อนทับกันเต็มถุง
+- ถังหรือถุงหลายใบในรูปเดียว แต่ละใบแยกชนิดไว้แล้ว เช่น พลาสติก แก้ว กระดาษ โลหะ
+- รูปถ่ายใกล้ที่เห็นกองของเพียงบางส่วน เช่น กระป๋องเต็มเฟรม
+- ของหลายชนิดปนกันในถุงเดียว
+
+วิธีทำ:
+- แบ่งสิ่งที่เห็นเป็นภาชนะทีละใบใน containers ถ้าทั้งรูปเป็นถุงหรือกองเดียวให้มีรายการเดียว \
+ถ้ามีหลายถุงหรือหลายถังให้แยกเป็นรายการละใบ อย่ารวมถังที่แยกกันอยู่ให้เป็นใบเดียว
+- name_th คือชื่อสั้น ๆ ที่สมาชิกและคนขับใช้เรียกถุงนั้น เช่น "ถุงขวดพลาสติก" "ถังแก้ว" \
+position_th คือตำแหน่งในรูป เช่น "บนซ้าย" "ล่างขวา" ถ้ามีใบเดียวให้ใส่ "ทั้งรูป"
+- kind คือชนิดภาชนะ: bag ถุง, bin ถังหรือตะกร้า, box กล่องหรือลัง, pile กองที่ไม่มีภาชนะ
+- items คือของในภาชนะนั้น รวมของชนิดเดียวกันไว้ในรายการเดียว และนับจำนวนชิ้นใส่ใน count
+- ถ้านับได้ครบทุกชิ้นให้ count_method เป็น exact ถ้าของซ้อนหรือบังกันจนต้องประมาณ ให้เป็น estimate \
+โดยประมาณจากชิ้นที่เห็นบวกกับส่วนที่น่าจะถูกบังอยู่อย่างสมเหตุสมผล อย่าใส่ตัวเลขที่สูงเกินกว่าปริมาตรของภาชนะจะจุได้
+- ถ้ารูปตัดขอบจนเห็นกองหรือถุงเพียงบางส่วน ให้ partial_view เป็น true และนับเฉพาะส่วนที่อยู่ในรูป
+- mixed เป็น true เมื่อภาชนะนั้นมีวัสดุต่างชนิดปนกันจนควรแยกก่อนส่ง
+- size คือปริมาตรของภาชนะนั้น ใช้จองพื้นที่บนรถ: S ประมาณถุงหิ้วหนึ่งใบ, M ประมาณถุงดำหนึ่งใบ, L ใหญ่กว่านั้น
 - เลือก material ให้ตรงชนิดวัสดุ: pet = ขวดพลาสติกใส, hdpe = พลาสติกขุ่นเช่นขวดนมหรือแกลลอน, \
-other_plastic = พลาสติกชนิดอื่น, cardboard = กระดาษลัง, paper = กระดาษทั่วไป, aluminum = กระป๋องอะลูมิเนียม, \
-steel = กระป๋องเหล็กหรือโลหะอื่น, glass = ขวดหรือโหลแก้ว, non_recyclable = ของที่บริการนี้ไม่รับ \
-เช่น เศษอาหาร ของเปื้อนมาก โฟม ของอันตราย
-- prep_tip_th คือคำแนะนำสั้น ๆ ก่อนส่ง เช่น เทน้ำออก ล้างคราบ บีบให้แบน แกะฉลาก ถ้าไม่มีอะไรต้องทำให้เว้นว่าง
-- size คือปริมาตรของกองโดยรวม ใช้จองพื้นที่บนรถ: S ประมาณถุงหิ้วหนึ่งใบ, M ประมาณถุงดำหนึ่งใบ, L หลายถุงหรือหลายลัง
-- summary_th คือสรุปหนึ่งประโยคให้สมาชิกอ่าน
-- ถ้าในรูปไม่มีของที่เป็นขยะหรือของรีไซเคิลเลย ให้ items เป็นรายการว่าง และบอกเหตุผลใน summary_th
+other_plastic = พลาสติกชนิดอื่นเช่นถาด แก้ว ฝา, cardboard = กระดาษลังและกล่องกระดาษแข็ง, paper = กระดาษทั่วไป, \
+aluminum = กระป๋องเครื่องดื่มอะลูมิเนียม, steel = กระป๋องอาหารหรือโลหะอื่น, glass = ขวดหรือโหลแก้ว, \
+non_recyclable = ของที่บริการนี้ไม่รับ เช่น ซองขนม ถุงพลาสติกเปื้อน เศษอาหาร โฟม ของอันตราย
+- prep_tip_th คือคำแนะนำสั้น ๆ ก่อนส่ง เช่น เทน้ำออก ล้างคราบ บีบให้แบน ถ้าไม่มีอะไรต้องทำให้เว้นว่าง
+- summary_th คือสรุปหนึ่งประโยคให้สมาชิกอ่าน บอกจำนวนถุงและของหลัก
+- photo_tip_th ใช้เมื่อถ่ายใหม่แล้วจะนับได้แม่นขึ้น เช่น ให้ถ่ายจากด้านบนให้เห็นทั้งถุง หรือเกลี่ยของออก ถ้ารูปดีพอแล้วให้เว้นว่าง
+- confidence คือความมั่นใจโดยรวมของการนับ
+- ถ้าในรูปไม่มีขยะหรือของรีไซเคิลเลย ให้ containers เป็นรายการว่าง และบอกเหตุผลใน summary_th
 
 ตอบข้อความทุกช่องเป็นภาษาไทย"""
 
 _MOCKS = [
     {
-        "items": [
-            {"name_th": "ขวดน้ำดื่มพลาสติก", "material": "pet", "count": 12, "prep_tip_th": "เทน้ำออกและบีบให้แบน"},
-            {"name_th": "กระป๋องน้ำอัดลม", "material": "aluminum", "count": 6, "prep_tip_th": "ล้างคราบหวานออก"},
+        "containers": [
+            {"name_th": "ถุงขวดพลาสติก", "position_th": "ทั้งรูป", "kind": "bag", "mixed": False, "size": "M",
+             "count_method": "estimate", "partial_view": False,
+             "items": [{"name_th": "ขวดน้ำดื่มพลาสติก", "material": "pet", "count": 24, "prep_tip_th": "เทน้ำออกและบีบให้แบน"}]},
         ],
-        "size": "S", "confidence": "medium",
-        "summary_th": "พบขวดพลาสติกใสและกระป๋องอะลูมิเนียม รับได้ทั้งหมด",
+        "summary_th": "พบถุงขวดพลาสติกใส 1 ถุง ประมาณ 24 ขวด", "photo_tip_th": "", "confidence": "medium",
     },
     {
-        "items": [
-            {"name_th": "ลังกระดาษ", "material": "cardboard", "count": 5, "prep_tip_th": "พับให้แบนและมัดรวมกัน"},
-            {"name_th": "ขวดแก้ว", "material": "glass", "count": 4, "prep_tip_th": "ล้างและแยกฝาออก"},
-            {"name_th": "กล่องโฟม", "material": "non_recyclable", "count": 2, "prep_tip_th": ""},
+        "containers": [
+            {"name_th": "ถังพลาสติก", "position_th": "บนซ้าย", "kind": "bin", "mixed": False, "size": "S",
+             "count_method": "exact", "partial_view": False,
+             "items": [{"name_th": "ขวดและภาชนะพลาสติก", "material": "pet", "count": 6, "prep_tip_th": "ล้างคราบออก"}]},
+            {"name_th": "ถังแก้ว", "position_th": "บนขวา", "kind": "bin", "mixed": False, "size": "S",
+             "count_method": "exact", "partial_view": False,
+             "items": [{"name_th": "ขวดและโหลแก้ว", "material": "glass", "count": 5, "prep_tip_th": "แยกฝาออก"}]},
+            {"name_th": "ถังโลหะ", "position_th": "ล่างขวา", "kind": "bin", "mixed": False, "size": "S",
+             "count_method": "exact", "partial_view": False,
+             "items": [{"name_th": "กระป๋องอาหาร", "material": "steel", "count": 7, "prep_tip_th": "ล้างเศษอาหารออก"}]},
         ],
-        "size": "M", "confidence": "medium",
-        "summary_th": "พบลังกระดาษและขวดแก้วที่รับได้ ส่วนกล่องโฟมไม่อยู่ในรายการรับ",
+        "summary_th": "พบถังแยกชนิด 3 ใบ คือพลาสติก แก้ว และโลหะ", "photo_tip_th": "", "confidence": "medium",
     },
 ]
 
@@ -136,7 +176,7 @@ def classify(image_b64: str, media_type: str) -> dict:
         return mock("ยังไม่ได้ตั้งค่า API key จึงแสดงผลแบบจำลอง ไม่ได้มาจากรูปที่แนบ")
     content = [
         {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
-        {"type": "text", "text": "ช่วยแยกชนิดและนับจำนวนของในรูปนี้"},
+        {"type": "text", "text": "ช่วยแบ่งเป็นถุงหรือถังทีละใบ แยกชนิด และนับจำนวนของในรูปนี้"},
     ]
     try:
         return {**_ask(CLASSIFY_SYSTEM, content, CLASSIFY_SCHEMA), "source": "claude", "warning": ""}
